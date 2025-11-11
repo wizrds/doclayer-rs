@@ -8,7 +8,7 @@ license.workspace = true
 readme.workspace = true
 
 [dependencies]
-doclayer-core = { path = "../doclayer-core", version = "0.0.0" }
+doclayer-core = { path = "../doclayer-core", version = "0.1.0" }
 
 async-trait = { workspace = true }
 serde = { workspace = true }
