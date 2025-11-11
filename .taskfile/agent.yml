@@ -1,0 +1,17 @@
+version: '3'
+
+tasks:
+  prompt:
+    desc: Prompt the AI assistant for help with coding tasks
+    cmds:
+      - goose run --no-session --with-builtin developer -t "{{.PROMPT}}" {{.CLI_ARGS}}
+
+  recipe:generate-docs:
+    desc: Generate documentation comments for Rust source code
+    cmds:
+      - goose run --recipe .goose/recipes/generate-docs.yaml {{.CLI_ARGS}}
+  
+  recipe:refine-docs:
+    desc: Refine and improve existing documentation comments for Rust source code
+    cmds:
+      - goose run --recipe .goose/recipes/refine-docs.yaml {{.CLI_ARGS}}

@@ -1,0 +1,19 @@
+[package]
+name = "doclayer-memory"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+license.workspace = true
+readme.workspace = true
+
+[dependencies]
+doclayer-core = { path = "../doclayer-core", version = "0.0.0" }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+bson = { workspace = true }
+uuid = { workspace = true }
+mea = { workspace = true }

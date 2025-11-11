@@ -1,0 +1,23 @@
+[package]
+name = "doclayer"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+license.workspace = true
+readme.workspace = true
+
+[dependencies]
+doclayer-macros = { path = "../doclayer-macros", version = "0.0.0" }
+doclayer-core = { path = "../doclayer-core", version = "0.0.0" }
+doclayer-memory = { path = "../doclayer-memory", version = "0.0.0" }
+doclayer-mongodb = { path = "../doclayer-mongodb", version = "0.0.0", optional = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bson = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+mongodb = ["dep:doclayer-mongodb"]

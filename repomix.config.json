@@ -1,0 +1,28 @@
+{
+  "output": {
+    "filePath": "repomix.output.md",
+    "style": "markdown",
+    "instructionFilePath": "repomix.instruction.md",
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "topFilesLength": 5,
+    "showLineNumbers": false,
+    "copyToClipboard": false
+  },
+  "include": [
+    "doclayer/**/*.rs",
+    "doclayer-macros/**/*.rs",
+    "doclayer-core/**/*.rs",
+    "doclayer-memory/**/*.rs",
+    "doclayer-mongodb/**/*.rs",
+    "doclayer-test/**/*.rs"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": []
+  },
+  "security": {
+    "enableSecurityCheck": false
+  }
+}

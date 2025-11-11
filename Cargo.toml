@@ -1,0 +1,28 @@
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+description = "A thin JSON Document database abstraction layer."
+repository = "https://github.com/wizrds/doclayer-rs"
+license = "ISC"
+readme = "README.md"
+
+[workspace]
+resolver = "2"
+members = [
+    "doclayer-macros",
+    "doclayer-core",
+    "doclayer-memory",
+    "doclayer-mongodb",
+    "doclayer",
+]
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145" }
+bson = { version = "3.0.0", features = ["uuid-1", "chrono-0_4", "serde"] }
+async-trait = { version = "0.1.89" }
+futures = { version = "0.3.31" }
+thiserror = { version = "2.0.17" }
+chrono = { version = "0.4.42", features = ["serde"] }
+uuid = { version = "1.18.1", features = ["serde", "v4"] }
+mea = { version = "0.4.2" }
