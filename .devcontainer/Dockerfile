@@ -1,4 +1,4 @@
-ARG VARIANT=1.85.0-bookworm
+ARG VARIANT=1.94.0-bookworm
 FROM rust:${VARIANT}
 
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
@@ -17,10 +17,6 @@ RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/loc
 COPY Taskfile.yml /home/dev/Taskfile.yml
 # Install dev tools
 RUN task -d /home/dev install-devtools
-
-# Set the environment variable in the shell's profile to support login shells
-# having the virtual environment activated by default
-RUN echo 'export PATH=/opt/venv/bin:$PATH' >> /home/dev/.profile
 
 # Switch to the non-root user
 USER dev

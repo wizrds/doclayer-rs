@@ -11,8 +11,3 @@ includes:
     taskfile: .taskfile/utils.yml
   agent:
     taskfile: .taskfile/agent.yml
-
-tasks:
-  run:
-    cmds:
-      - cargo run --bin doclayer-test -- {{.CLI_ARGS}}
