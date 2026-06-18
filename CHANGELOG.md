@@ -1,6 +1,16 @@
 # Changelog
 
 ---
+## [0.2.0](https://github.com/wizrds/doclayer-rs/-/compare/0.1.1...0.2.0) - 2026-06-18
+
+### Bug Fixes
+
+- Add filter builder for fluent api of complex queries - ([f85a525](https://github.com/wizrds/doclayer-rs/-/commit/f85a52537d06185d79090d28e72614b357e97527)) - Timothy Pogue
+
+### Features
+
+- Rework query pagination as first class machinery - ([807910b](https://github.com/wizrds/doclayer-rs/-/commit/807910bbc309bc3cbddefe56ab75f98be83e81aa)) - Timothy Pogue
+---
 ## [0.1.1](https://github.com/wizrds/doclayer-rs/-/compare/0.1.0...0.1.1) - 2026-05-05
 
 ### Bug Fixes
