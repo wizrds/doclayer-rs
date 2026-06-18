@@ -28,6 +28,27 @@
 //! - Logical: `and`, `or`
 //!
 //! Expressions can be combined using chainable methods for more complex queries.
+//!
+//! # Building Optional and Conditional Filters
+//!
+//! When some or all of a filter's conditions are optional, use [`FilterBuilder`]
+//! (via [`Filter::all`] or [`Filter::any`]) instead of chaining [`Expr::and`]/[`Expr::or`]
+//! off of a guaranteed seed condition. A [`FilterBuilder`] starts empty and accepts
+//! conditions one at a time, conditionally based on a `bool`, an `Option<T>`, or a
+//! closure, and collapses to `None` if nothing was ever added:
+//!
+//! ```ignore
+//! use doclayer::query::{Query, Filter};
+//!
+//! let query = Query::builder()
+//!     .filter(
+//!         Filter::all()
+//!             .add_opt(name_filter, |name| Filter::contains("name", name))
+//!             .add_if(include_admins, Filter::eq("role", "admin")),
+//!     )
+//!     .offset_page(0, 10)
+//!     .build();
+//! ```
 
 use bson::Bson;
 
@@ -340,6 +361,142 @@ impl Filter {
     pub fn none_of(field: impl Into<String>, value: impl Into<Bson>) -> Expr {
         Expr::field(field.into(), FieldOp::NoneOf, value.into())
     }
+
+    /// Starts an empty [`FilterBuilder`] that combines its conditions with
+    /// logical AND, for composing a filter out of zero or more optional
+    /// conditions in a single fluent chain.
+    pub fn all() -> FilterBuilder {
+        FilterBuilder { mode: LogicalOp::And, conditions: Vec::new() }
+    }
+
+    /// Starts an empty [`FilterBuilder`] that combines its conditions with
+    /// logical OR, for composing a filter out of zero or more optional
+    /// conditions in a single fluent chain.
+    pub fn any() -> FilterBuilder {
+        FilterBuilder { mode: LogicalOp::Or, conditions: Vec::new() }
+    }
+}
+
+/// The logical combinator a [`FilterBuilder`] applies to its accumulated
+/// conditions once built.
+#[derive(Debug, Clone, Copy)]
+enum LogicalOp {
+    And,
+    Or,
+}
+
+/// A fluent accumulator for composing a filter [`Expr`] out of zero or more
+/// conditions, some or all of which may be conditionally present.
+///
+/// Unlike [`Filter`]'s static constructors, which always produce a concrete
+/// [`Expr`] immediately, a [`FilterBuilder`] starts empty and lets a caller
+/// add conditions one at a time, conditionally based on a `bool`, an
+/// `Option<T>`, or a closure, without leaving the fluent chain. Build one
+/// with [`Filter::all`] (AND-combined) or [`Filter::any`] (OR-combined).
+///
+/// # Example
+///
+/// ```
+/// use doclayer_core::query::{Expr, FieldOp, Filter};
+///
+/// let name_filter: Option<&str> = Some("Alice");
+/// let include_admins = false;
+///
+/// let filter = Filter::all()
+///     .add_opt(name_filter, |name| Filter::contains("name", name))
+///     .add_if(include_admins, Filter::eq("role", "admin"))
+///     .build();
+///
+/// assert!(matches!(
+///     filter,
+///     Some(Expr::Field { op: FieldOp::Contains, .. })
+/// ));
+/// ```
+#[derive(Debug, Clone)]
+pub struct FilterBuilder {
+    mode: LogicalOp,
+    conditions: Vec<Expr>,
+}
+
+impl FilterBuilder {
+    /// Unconditionally adds `expr` as another condition.
+    pub fn add(mut self, expr: Expr) -> Self {
+        self.conditions.push(expr);
+        self
+    }
+
+    /// Adds `expr` as another condition only if `cond` is `true`.
+    pub fn add_if(self, cond: bool, expr: Expr) -> Self {
+        if cond { self.add(expr) } else { self }
+    }
+
+    /// Adds `f(value)` as another condition only if `opt` is `Some(value)`.
+    pub fn add_opt<T>(self, opt: Option<T>, f: impl FnOnce(T) -> Expr) -> Self {
+        match opt {
+            Some(value) => self.add(f(value)),
+            None => self,
+        }
+    }
+
+    /// Adds the result of `f` as another condition only if it returns `Some`.
+    pub fn add_with(self, f: impl FnOnce() -> Option<Expr>) -> Self {
+        match f() {
+            Some(expr) => self.add(expr),
+            None => self,
+        }
+    }
+
+    /// Adds the result of `f` as another condition only if it returns
+    /// `Ok(Some(_))`. Propagates `Err` immediately, abandoning everything
+    /// accumulated on this builder so far, matching ordinary `?`-style
+    /// fallible chaining elsewhere in this crate.
+    pub fn try_add_with<E>(self, f: impl FnOnce() -> Result<Option<Expr>, E>) -> Result<Self, E> {
+        Ok(match f()? {
+            Some(expr) => self.add(expr),
+            None => self,
+        })
+    }
+
+    /// Nests an AND-combined [`FilterBuilder`] group, built by `f`, as a
+    /// single condition on this builder. If `f` adds no conditions to the
+    /// nested builder, nothing is added here either.
+    pub fn and_group(self, f: impl FnOnce(FilterBuilder) -> FilterBuilder) -> Self {
+        match f(Filter::all()).build() {
+            Some(expr) => self.add(expr),
+            None => self,
+        }
+    }
+
+    /// Nests an OR-combined [`FilterBuilder`] group, built by `f`, as a
+    /// single condition on this builder. If `f` adds no conditions to the
+    /// nested builder, nothing is added here either.
+    pub fn or_group(self, f: impl FnOnce(FilterBuilder) -> FilterBuilder) -> Self {
+        match f(Filter::any()).build() {
+            Some(expr) => self.add(expr),
+            None => self,
+        }
+    }
+
+    /// Finishes this builder, collapsing its accumulated conditions into a
+    /// single filter expression: `None` if nothing was ever added, the bare
+    /// [`Expr`] itself if exactly one condition was added, or an
+    /// [`Expr::And`]/[`Expr::Or`] of every condition otherwise.
+    pub fn build(self) -> Option<Expr> {
+        match self.conditions.len() {
+            0 => None,
+            1 => self.conditions.into_iter().next(),
+            _ => Some(match self.mode {
+                LogicalOp::And => Expr::And(self.conditions),
+                LogicalOp::Or => Expr::Or(self.conditions),
+            }),
+        }
+    }
+}
+
+impl From<FilterBuilder> for Option<Expr> {
+    fn from(builder: FilterBuilder) -> Self {
+        builder.build()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -355,11 +512,17 @@ impl QueryBuilder {
 
     /// Sets the filter expression for this query.
     ///
+    /// Accepts a bare [`Expr`], an `Option<Expr>`, or a [`FilterBuilder`]
+    /// directly (via its `Into<Option<Expr>>` conversion), so a filter built
+    /// from entirely optional conditions can flow straight into this method
+    /// without an intermediate `.build()` call. Passing a value that
+    /// converts to `None` clears any previously set filter.
+    ///
     /// # Arguments
     ///
-    /// * `filter` - The filter expression to apply
-    pub fn filter(mut self, filter: Expr) -> Self {
-        self.query.filter = Some(filter);
+    /// * `filter` - The filter expression to apply, or `None` for no filter
+    pub fn filter(mut self, filter: impl Into<Option<Expr>>) -> Self {
+        self.query.filter = filter.into();
         self
     }
 
@@ -453,5 +616,172 @@ pub trait QueryVisitor {
             Expr::Exists(field, should_exist) => self.visit_exists(field, *should_exist),
             Expr::Field { field, op, value } => self.visit_field(field, op, value),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_eq_field(expr: &Expr, field: &str) -> bool {
+        matches!(expr, Expr::Field { field: f, op: FieldOp::Eq, .. } if f == field)
+    }
+
+    #[test]
+    fn filter_builder_with_no_conditions_builds_none() {
+        assert!(Filter::all().build().is_none());
+        assert!(Filter::any().build().is_none());
+    }
+
+    #[test]
+    fn filter_builder_with_one_condition_collapses_to_bare_expr() {
+        let built = Filter::all().add(Filter::eq("status", "active")).build();
+
+        assert!(matches!(built, Some(ref expr) if is_eq_field(expr, "status")));
+    }
+
+    #[test]
+    fn filter_builder_and_mode_combines_multiple_conditions_in_order() {
+        let built = Filter::all()
+            .add(Filter::eq("status", "active"))
+            .add(Filter::eq("role", "admin"))
+            .build();
+
+        match built {
+            Some(Expr::And(conditions)) => {
+                assert!(is_eq_field(&conditions[0], "status"));
+                assert!(is_eq_field(&conditions[1], "role"));
+            }
+            other => panic!("expected Expr::And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn filter_builder_or_mode_combines_multiple_conditions_in_order() {
+        let built = Filter::any()
+            .add(Filter::eq("role", "admin"))
+            .add(Filter::eq("role", "owner"))
+            .build();
+
+        match built {
+            Some(Expr::Or(conditions)) => {
+                assert!(is_eq_field(&conditions[0], "role"));
+                assert!(is_eq_field(&conditions[1], "role"));
+            }
+            other => panic!("expected Expr::Or, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_if_skips_when_false_and_adds_when_true() {
+        let skipped = Filter::all()
+            .add_if(false, Filter::eq("role", "admin"))
+            .build();
+
+        assert!(skipped.is_none());
+
+        let added = Filter::all()
+            .add_if(true, Filter::eq("role", "admin"))
+            .build();
+
+        assert!(matches!(added, Some(ref expr) if is_eq_field(expr, "role")));
+    }
+
+    #[test]
+    fn add_opt_skips_on_none_and_unwraps_on_some() {
+        let skipped = Filter::all()
+            .add_opt(None::<&str>, |name| Filter::contains("name", name))
+            .build();
+
+        assert!(skipped.is_none());
+
+        let added = Filter::all()
+            .add_opt(Some("Alice"), |name| Filter::contains("name", name))
+            .build();
+
+        assert!(matches!(
+            added,
+            Some(Expr::Field { op: FieldOp::Contains, .. })
+        ));
+    }
+
+    #[test]
+    fn add_with_skips_on_none_and_adds_on_some() {
+        let skipped = Filter::all().add_with(|| None).build();
+
+        assert!(skipped.is_none());
+
+        let added = Filter::all()
+            .add_with(|| Some(Filter::eq("status", "active")))
+            .build();
+
+        assert!(matches!(added, Some(ref expr) if is_eq_field(expr, "status")));
+    }
+
+    #[test]
+    fn try_add_with_propagates_ok_variants_and_short_circuits_on_err() {
+        let skipped = Filter::all()
+            .try_add_with(|| Ok::<_, &str>(None))
+            .unwrap()
+            .build();
+
+        assert!(skipped.is_none());
+
+        let added = Filter::all()
+            .try_add_with(|| Ok::<_, &str>(Some(Filter::eq("status", "active"))))
+            .unwrap()
+            .build();
+
+        assert!(matches!(added, Some(ref expr) if is_eq_field(expr, "status")));
+
+        let failed = Filter::all()
+            .add(Filter::eq("status", "active"))
+            .try_add_with(|| Err("boom"));
+
+        assert_eq!(failed.unwrap_err(), "boom");
+    }
+
+    #[test]
+    fn and_group_nests_an_or_group_inside_an_and_chain() {
+        let built = Filter::all()
+            .add(Filter::eq("status", "active"))
+            .or_group(|g| {
+                g.add(Filter::eq("role", "admin"))
+                    .add(Filter::eq("role", "owner"))
+            })
+            .build();
+
+        match built {
+            Some(Expr::And(conditions)) => {
+                assert!(is_eq_field(&conditions[0], "status"));
+                assert!(matches!(conditions[1], Expr::Or(ref nested) if nested.len() == 2));
+            }
+            other => panic!("expected Expr::And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn group_with_no_conditions_added_leaves_outer_builder_unchanged() {
+        let built = Filter::all()
+            .add(Filter::eq("status", "active"))
+            .or_group(|g| g.add_if(false, Filter::eq("role", "admin")))
+            .build();
+
+        assert!(matches!(built, Some(ref expr) if is_eq_field(expr, "status")));
+    }
+
+    #[test]
+    fn query_builder_filter_accepts_a_filter_builder_directly() {
+        let query = Query::builder()
+            .filter(Filter::all().add_opt(None::<&str>, |name| Filter::contains("name", name)))
+            .build();
+
+        assert!(query.filter.is_none());
+
+        let query = Query::builder()
+            .filter(Filter::all().add(Filter::eq("status", "active")))
+            .build();
+
+        assert!(matches!(query.filter, Some(ref expr) if is_eq_field(expr, "status")));
     }
 }

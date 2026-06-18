@@ -154,7 +154,7 @@ user_collection.insert(users).await?;
 
 ### Querying Documents
 
-The library provides a fluent query builder API with support for filtering, sorting, and pagination:
+The library provides a fluent query builder API with support for filtering, sorting, and pagination. A query always returns a `Page<T>`, which carries the matching `items` alongside pagination metadata (`next_cursor`, `previous_cursor`, and an optional `total_count`) rather than a bare list.
 
 #### Simple Queries
 
@@ -162,29 +162,68 @@ The library provides a fluent query builder API with support for filtering, sort
 // Query all documents in a collection
 let all_users = user_collection.query(Query::builder().build()).await?;
 
-// Limit and offset for pagination
+println!("{:?}", all_users.items);
+```
+
+#### Pagination
+
+Pagination is offset-based or cursor-based, modeled as mutually exclusive variants of a single `Pagination` type so a query can never be built with both an offset and a cursor set at once.
+
+Offset-based pagination skips a number of documents and returns up to a limit, exactly like traditional "page N" pagination:
+
+```rust
 let page_one = user_collection
+    .query(Query::builder().offset_page(0, 10).build())
+    .await?;
+
+let page_two = user_collection
+    .query(Query::builder().offset_page(10, 10).build())
+    .await?;
+```
+
+Cursor-based pagination walks forward or backward through a collection using an opaque token returned from a previous page. It remains correct even if documents are inserted or deleted between page fetches, which offset-based pagination cannot guarantee:
+
+```rust
+let first_page = user_collection
     .query(
         Query::builder()
-            .limit(10)
-            .offset(0)
+            .sort("name", SortDirection::Asc)
+            .cursor_page(None, 10, CursorDirection::Forward)
             .build()
     )
     .await?;
 
-let page_two = user_collection
+// `next_cursor` is `None` once there are no more results in this direction.
+if let Some(cursor) = first_page.next_cursor.clone() {
+    let second_page = user_collection
+        .query(
+            Query::builder()
+                .sort("name", SortDirection::Asc)
+                .cursor_page(Some(cursor), 10, CursorDirection::Forward)
+                .build()
+        )
+        .await?;
+}
+```
+
+Request the total number of matching documents across all pages with `.include_total_count(true)` — left off by default since counting can be expensive on some backends:
+
+```rust
+let page = user_collection
     .query(
         Query::builder()
-            .limit(10)
-            .offset(10)
+            .offset_page(0, 10)
+            .include_total_count(true)
             .build()
     )
     .await?;
+
+println!("Showing {} of {:?} total", page.items.len(), page.total_count);
 ```
 
 #### Filtering
 
-The `Filter` API provides various comparison and logical operators:
+The `Filter` struct provides a collection of static methods that build a single comparison or existence check, returning an `Expr` (a filter expression) each time:
 
 ```rust
 // Equality filter
@@ -234,7 +273,7 @@ let results = user_collection
 
 #### Complex Filters
 
-Combine multiple filters using logical operators:
+`Expr` itself has chainable `.and(other)`, `.or(other)`, and `.not()` methods for combining expressions you already have in hand:
 
 ```rust
 // AND filter - all conditions must match
@@ -242,10 +281,8 @@ let results = user_collection
     .query(
         Query::builder()
             .filter(
-                Filter::and(vec![
-                    Filter::starts_with("name", "A"),
-                    Filter::contains("email", "@example.com"),
-                ])
+                Filter::starts_with("name", "A")
+                    .and(Filter::contains("email", "@example.com"))
             )
             .build()
     )
@@ -256,10 +293,8 @@ let results = user_collection
     .query(
         Query::builder()
             .filter(
-                Filter::or(vec![
-                    Filter::eq("name", "Alice"),
-                    Filter::eq("name", "Bob"),
-                ])
+                Filter::eq("name", "Alice")
+                    .or(Filter::eq("name", "Bob"))
             )
             .build()
     )
@@ -269,7 +304,7 @@ let results = user_collection
 let results = user_collection
     .query(
         Query::builder()
-            .filter(Filter::not(Filter::eq("name", "Bob")))
+            .filter(Filter::eq("name", "Bob").not())
             .build()
     )
     .await?;
@@ -282,6 +317,60 @@ let results = user_collection
             .build()
     )
     .await?;
+```
+
+`Filter::and(exprs)`/`Filter::or(exprs)` are also available as static methods that combine a whole collection of expressions at once (`Filter::and(vec![expr1, expr2, expr3])`), which is convenient when you already have a `Vec<Expr>` built up some other way.
+
+#### Building Optional and Conditional Filters
+
+The methods above all require a concrete `Expr` to start from. When some or all of a filter's conditions are optional — for example, a search endpoint where a name filter, a role filter, and a region filter are each only applied if the caller actually supplied them — use `FilterBuilder` instead. It starts completely empty (no seed condition required) and lets you add conditions one at a time, conditionally based on a `bool`, an `Option<T>`, or a closure, all without leaving the fluent chain:
+
+```rust
+let name_filter: Option<&str> = Some("Alice");
+let include_admins = false;
+
+let results = user_collection
+    .query(
+        Query::builder()
+            .filter(
+                Filter::all()
+                    .add_opt(name_filter, |name| Filter::contains("name", name))
+                    .add_if(include_admins, Filter::eq("role", "admin"))
+                    .add_with(|| compute_optional_region_filter())
+            )
+            .offset_page(0, 10)
+            .build()
+    )
+    .await?;
+```
+
+`Filter::all()` starts a builder that combines whatever conditions end up being added with logical AND; `Filter::any()` does the same with logical OR. Conditions can be added:
+
+- Unconditionally with `.add(expr)`.
+- Based on a `bool` with `.add_if(cond, expr)` — `expr` is added only if `cond` is `true`.
+- Based on an `Option<T>` with `.add_opt(opt, |value| expr)` — the closure runs, and its result is added, only if `opt` is `Some`.
+- Based on a closure that returns `Option<Expr>` with `.add_with(|| ...)` — the result is added only if the closure returns `Some`.
+- Based on a closure that can fail with `.try_add_with(|| ...)`, which returns `Result<Self, E>` so a fallible lookup (for example, validating and parsing a date range) can short-circuit the whole chain with `?`.
+
+A sub-group combined with the opposite operator can be nested mid-chain with `.and_group(|builder| ...)` / `.or_group(|builder| ...)`, instead of having to build a `Vec<Expr>` by hand:
+
+```rust
+let filter = Filter::all()
+    .add(Filter::eq("status", "active"))
+    .or_group(|g| {
+        g.add(Filter::eq("role", "admin"))
+            .add(Filter::eq("role", "owner"))
+    });
+```
+
+Calling `Query::builder().filter(...)` directly on a `FilterBuilder` (as in the example above) builds it automatically. If none of a builder's conditions ever ended up being added — every optional input was absent — the query is left with no filter at all, rather than an empty or meaningless one; you can also call `.build()` yourself to get the resulting `Option<Expr>` directly:
+
+```rust
+let filter: Option<Expr> = Filter::all()
+    .add_opt(None::<&str>, |name| Filter::contains("name", name))
+    .build();
+
+assert!(filter.is_none());
 ```
 
 #### Sorting
@@ -331,16 +420,16 @@ let posts = post_collection
     .query(
         Query::builder()
             .filter(
-                Filter::and(vec![
-                    Filter::eq("user_id", &alice_user_id),
-                    Filter::any_of("tags", vec!["rust", "database"]),
-                ])
+                Filter::eq("user_id", &alice_user_id)
+                    .and(Filter::any_of("tags", vec!["rust", "database"]))
             )
             .sort("created_at", SortDirection::Desc)
-            .limit(5)
+            .offset_page(0, 5)
             .build()
     )
     .await?;
+
+println!("{:?}", posts.items);
 ```
 
 ### Updating Documents

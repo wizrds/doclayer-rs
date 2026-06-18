@@ -50,7 +50,7 @@
 //!     let results = user_collection
 //!         .query(
 //!             Query::builder()
-//!                 .filter(Field::new("name").eq("Alice"))
+//!                 .filter(Filter::eq("name", "Alice"))
 //!                 .build(),
 //!         )
 //!         .await
@@ -108,7 +108,7 @@
 //!     let results = user_collection
 //!         .query(
 //!             Query::builder()
-//!                 .filter(Field::new("name").eq("Bob"))
+//!                 .filter(Filter::eq("name", "Bob"))
 //!                 .build(),
 //!         )
 //!         .await
