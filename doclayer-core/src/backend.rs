@@ -62,10 +62,11 @@ use crate::{error::DocumentStoreResult, page::Page, query::Query};
 /// variants may be returned by each operation.
 #[async_trait]
 pub trait StoreBackend: Send + Sync + Debug {
-    /// Inserts new documents into a collection, overwriting any existing documents with the same IDs.
+    /// Inserts new documents into a collection.
     ///
-    /// This method batches the insertion of multiple documents into a single collection.
-    /// If a document with the same ID already exists, it is replaced entirely.
+    /// This method batches the insertion of multiple documents into a single collection. If a document
+    /// with the same ID already exists, this may be treated as an error depending on the backend
+    /// implementation. Check the specific backend documentation for its behavior.
     ///
     /// # Arguments
     ///
@@ -96,6 +97,29 @@ pub trait StoreBackend: Send + Sync + Debug {
     ///
     /// Returns `Ok(())` on success, or a [`DocumentStoreError`](crate::error::DocumentStoreError) on failure.
     async fn update_documents(
+        &self,
+        documents: Vec<(Uuid, Bson)>,
+        collection: &str,
+    ) -> DocumentStoreResult<()>;
+
+    /// Inserts a document if it does not already exist, or fully replaces it if it does.
+    ///
+    /// This method batches the insertion or replacement of multiple documents into a single
+    /// collection. Unlike [`StoreBackend::insert_documents`] and [`StoreBackend::update_documents`],
+    /// this method never fails because of a document's prior existence: for each given ID, if a
+    /// document with that ID already exists in the collection, it is replaced entirely with the
+    /// given document (the same "full replace" semantics as [`StoreBackend::update_documents`]);
+    /// otherwise, the given document is inserted as new.
+    ///
+    /// # Arguments
+    ///
+    /// * `documents` - A vector of (UUID, BSON document) pairs to insert or replace
+    /// * `collection` - The name of the collection to upsert into. Created automatically if it doesn't exist.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or a [`DocumentStoreError`](crate::error::DocumentStoreError) on failure.
+    async fn upsert_documents(
         &self,
         documents: Vec<(Uuid, Bson)>,
         collection: &str,
@@ -375,6 +399,16 @@ where
             .await
     }
 
+    async fn upsert_documents(
+        &self,
+        documents: Vec<(Uuid, Bson)>,
+        collection: &str,
+    ) -> DocumentStoreResult<()> {
+        (*self)
+            .upsert_documents(documents, collection)
+            .await
+    }
+
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()> {
         (*self)
             .delete_documents(ids, collection)
@@ -494,6 +528,16 @@ where
             .await
     }
 
+    async fn upsert_documents(
+        &self,
+        documents: Vec<(Uuid, Bson)>,
+        collection: &str,
+    ) -> DocumentStoreResult<()> {
+        (**self)
+            .upsert_documents(documents, collection)
+            .await
+    }
+
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()> {
         (**self)
             .delete_documents(ids, collection)
@@ -600,6 +644,11 @@ pub trait DynStoreBackend: Send + Sync + Debug {
         documents: Vec<(Uuid, Bson)>,
         collection: &str,
     ) -> DocumentStoreResult<()>;
+    async fn upsert_documents(
+        &self,
+        documents: Vec<(Uuid, Bson)>,
+        collection: &str,
+    ) -> DocumentStoreResult<()>;
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()>;
     async fn get_documents(
         &self,
@@ -657,6 +706,15 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         collection: &str,
     ) -> DocumentStoreResult<()> {
         self.update_documents(documents, collection)
+            .await
+    }
+
+    async fn upsert_documents(
+        &self,
+        documents: Vec<(Uuid, Bson)>,
+        collection: &str,
+    ) -> DocumentStoreResult<()> {
+        self.upsert_documents(documents, collection)
             .await
     }
 

@@ -182,6 +182,25 @@ impl StoreBackend for MongoDbStore {
         Ok(())
     }
 
+    async fn upsert_documents(&self, documents: Vec<(Uuid, Bson)>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
+        iter(documents)
+            .then(async |(id, doc)| self.get_collection(collection)
+                .update_one(
+                    doc! { "_id": id },
+                    doc! { "$set": self.prepare_document(&id, &doc)? },
+                )
+                .upsert(true)
+                .await
+                .map_err(|e| DocumentStoreError::Backend(e.to_string()))
+            )
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
+    }
+
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()> {
         self.ensure_not_shut_down()?;
 

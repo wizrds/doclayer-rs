@@ -107,6 +107,22 @@ impl<'a, B: StoreBackend> Collection<'a, B> {
             .await?)
     }
 
+    /// Inserts new documents into the collection, or replaces them entirely if a document with the same ID already exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `documents` - A vector of (ID, BSON document) pairs to insert or replace
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if the operation fails.
+    pub async fn upsert(&self, documents: Vec<(Uuid, Bson)>) -> DocumentStoreResult<()> {
+        Ok(self
+            .backend
+            .upsert_documents(documents, &self.name())
+            .await?)
+    }
+
     /// Deletes documents from the collection by their IDs.
     ///
     /// # Arguments
@@ -236,6 +252,22 @@ impl<'a> DynCollection<'a> {
         Ok(self
             .backend
             .update_documents(documents, &self.name())
+            .await?)
+    }
+
+    /// Inserts new documents into the collection, or replaces them entirely if a document with the same ID already exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `documents` - A vector of (ID, BSON document) pairs to insert or replace
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if the operation fails.
+    pub async fn upsert(&self, documents: Vec<(Uuid, Bson)>) -> DocumentStoreResult<()> {
+        Ok(self
+            .backend
+            .upsert_documents(documents, &self.name())
             .await?)
     }
 
@@ -391,6 +423,31 @@ impl<'a, B: StoreBackend, D: Document> TypedCollection<'a, B, D> {
             .await?)
     }
 
+    /// Inserts new documents into the collection, or replaces them entirely if a document with the same ID already exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `documents` - A vector of documents to insert or replace
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if serialization or the operation fails.
+    pub async fn upsert(&self, documents: Vec<D>) -> DocumentStoreResult<()> {
+        Ok(self
+            .backend
+            .upsert_documents(
+                documents
+                    .into_iter()
+                    .map(|d| {
+                        d.to_bson()
+                            .map(move |b| (d.id().clone(), b))
+                    })
+                    .collect::<Result<Vec<(Uuid, Bson)>, _>>()?,
+                &self.name(),
+            )
+            .await?)
+    }
+
     /// Deletes documents from the collection by their IDs.
     ///
     /// # Arguments
@@ -534,6 +591,31 @@ impl<'a, D: Document> DynTypedCollection<'a, D> {
         Ok(self
             .backend
             .update_documents(
+                documents
+                    .into_iter()
+                    .map(|d| {
+                        d.to_bson()
+                            .map(move |b| (d.id().clone(), b))
+                    })
+                    .collect::<Result<Vec<(Uuid, Bson)>, _>>()?,
+                &self.name(),
+            )
+            .await?)
+    }
+
+    /// Inserts new documents into the collection, or replaces them entirely if a document with the same ID already exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `documents` - A vector of documents to insert or replace
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if serialization or the operation fails.
+    pub async fn upsert(&self, documents: Vec<D>) -> DocumentStoreResult<()> {
+        Ok(self
+            .backend
+            .upsert_documents(
                 documents
                     .into_iter()
                     .map(|d| {

@@ -164,6 +164,21 @@ impl StoreBackend for InMemoryStore {
         Ok(())
     }
 
+    async fn upsert_documents(&self, documents: Vec<(Uuid, Bson)>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
+        let mut store = self.store.write().await;
+        let collection_map = store
+            .entry(collection.to_string())
+            .or_default();
+
+        for (id, doc) in documents {
+            collection_map.insert(id.to_string(), doc);
+        }
+
+        Ok(())
+    }
+
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()> {
         self.ensure_not_shut_down()?;
 

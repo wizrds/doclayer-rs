@@ -195,6 +195,13 @@ impl<'a> MigrateOp<'a> {
             .await
     }
 
+    pub async fn upsert_typed<D: Document>(&self, docs: Vec<D>) -> DocumentStoreResult<()> {
+        self.store
+            .typed_collection::<D>()
+            .upsert(docs)
+            .await
+    }
+
     pub async fn update_typed<D: Document>(&self, docs: Vec<D>) -> DocumentStoreResult<()> {
         self.store
             .typed_collection::<D>()
@@ -239,6 +246,17 @@ impl<'a> MigrateOp<'a> {
         self.store
             .collection(collection)
             .insert(docs)
+            .await
+    }
+
+    pub async fn upsert(
+        &self,
+        collection: &str,
+        docs: Vec<(Uuid, Bson)>,
+    ) -> DocumentStoreResult<()> {
+        self.store
+            .collection(collection)
+            .upsert(docs)
             .await
     }
 

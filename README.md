@@ -451,6 +451,20 @@ user.email = "alice.new@example.com".to_string();
 user_collection.insert(vec![user]).await?;
 ```
 
+### Upserting Documents
+
+Insert a document if it doesn't exist, or fully replace it if it does, in a single call:
+
+```rust
+let user = User {
+    id: Uuid::new(),
+    name: "Alice".to_string(),
+    email: "alice@example.com".to_string(),
+};
+
+user_collection.upsert(vec![user]).await?;
+```
+
 ### Deleting Documents
 
 Delete documents by their ID:
