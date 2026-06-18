@@ -1,6 +1,12 @@
 # Changelog
 
 ---
+## [0.2.2](https://github.com/wizrds/doclayer-rs/-/compare/0.2.1...0.2.2) - 2026-06-18
+
+### Bug Fixes
+
+- Add upsert operation for full replaces in single query - ([ad3731a](https://github.com/wizrds/doclayer-rs/-/commit/ad3731a2f0ea6ae897a8608bbdb7e8ab7aa25e44)) - Timothy Pogue
+---
 ## [0.2.1](https://github.com/wizrds/doclayer-rs/-/compare/0.2.0...0.2.1) - 2026-06-18
 
 ### Bug Fixes
