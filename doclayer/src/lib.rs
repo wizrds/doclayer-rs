@@ -117,8 +117,7 @@
 //!     println!("Queried users: {:?}", results);
 //!     
 //!     // Shutdown the store
-//!     // The dynamic store must use the `shutdown_boxed` method
-//!     dyn_store.shutdown_boxed().await.unwrap();
+//!     dyn_store.shutdown().await.unwrap();
 //! }
 //! ```
 //! 

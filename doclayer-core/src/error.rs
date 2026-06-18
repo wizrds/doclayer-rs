@@ -42,6 +42,9 @@ pub enum DocumentStoreError {
     /// An unknown error occurred.
     #[error("Unknown error: {0}")]
     Unknown(String),
+    /// An operation was attempted on a store that has already been shut down.
+    #[error("the document store has already been shut down")]
+    AlreadyShutDown,
 }
 
 /// A specialized `Result` type for document store operations.

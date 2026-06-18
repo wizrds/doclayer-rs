@@ -18,6 +18,8 @@
 //! let collection = store.typed_collection::<MyDocument>();
 //! ```
 
+use std::sync::Arc;
+
 use bson::Bson;
 
 use crate::{
@@ -42,14 +44,33 @@ use crate::{
 /// let store = DocumentStore::new(my_backend);
 /// let users = store.typed_collection::<User>();
 /// ```
-#[derive(Debug)]
+///
+/// # Cloning and Shutdown
+///
+/// Cloning a [`DocumentStore`] is cheap: the backend is held behind an
+/// [`Arc`], so every clone shares the same underlying connections and state.
+/// This makes it safe to clone a store into shared application state (for
+/// example, an `axum` `State`) and hand a clone to every async task that
+/// needs it. [`DocumentStore::shutdown`] can be called from any clone, any
+/// number of times; see its documentation for details.
+#[derive(Debug, Clone)]
 pub struct DocumentStore<B: StoreBackend> {
-    backend: B,
+    backend: Arc<B>,
 }
 
 impl<B: StoreBackend> DocumentStore<B> {
     /// Creates a new document store with the given backend.
     pub fn new(backend: B) -> Self {
+        Self::from_owned(backend)
+    }
+
+    /// Creates a new document store from an owned backend instance.
+    pub fn from_owned(backend: B) -> Self {
+        Self { backend: Arc::new(backend) }
+    }
+
+    /// Creates a new document store from an `Arc`-wrapped backend instance.
+    pub fn from_arc(backend: Arc<B>) -> Self {
         Self { backend }
     }
 
@@ -57,7 +78,7 @@ impl<B: StoreBackend> DocumentStore<B> {
     ///
     /// The collection name is determined by the document type's `collection_name()` method.
     pub fn typed_collection<'a, D: Document>(&'a self) -> TypedCollection<'a, B, D> {
-        TypedCollection::new(D::collection_name().to_string(), &self.backend)
+        TypedCollection::new(D::collection_name().to_string(), &*self.backend)
     }
 
     /// Gets an untyped collection with the given name.
@@ -66,7 +87,7 @@ impl<B: StoreBackend> DocumentStore<B> {
     ///
     /// * `name` - The name of the collection
     pub fn collection<'a>(&'a self, name: &str) -> Collection<'a, B> {
-        Collection::new(name.to_string(), &self.backend)
+        Collection::new(name.to_string(), &*self.backend)
     }
 
     /// Creates a new collection with the given name.
@@ -210,26 +231,38 @@ impl<B: StoreBackend> DocumentStore<B> {
 
     /// Shuts down the store and releases backend resources.
     ///
-    /// This consumes the store and should be called when no longer needed.
+    /// This may be called from any clone of this store, any number of
+    /// times. The first call performs the real teardown (closing
+    /// connections, flushing caches, and so on); every subsequent call,
+    /// from any clone, returns `Ok(())` immediately without doing anything
+    /// further. After the first successful call, every other method on
+    /// every clone of this store returns
+    /// [`DocumentStoreError::AlreadyShutDown`](crate::error::DocumentStoreError::AlreadyShutDown)
+    /// instead of performing its normal operation.
     ///
     /// # Errors
     ///
     /// Returns an error if the shutdown operation fails.
-    pub async fn shutdown(self) -> DocumentStoreResult<()> {
+    pub async fn shutdown(&self) -> DocumentStoreResult<()> {
         self.backend.shutdown().await?;
 
         Ok(())
     }
 }
 
-#[derive(Debug)]
+/// A dynamically dispatched document store whose backend type is chosen at runtime.
+///
+/// Like [`DocumentStore`], cloning a [`DynDocumentStore`] is cheap: the
+/// backend trait object is held behind an [`Arc`], so every clone shares
+/// the same underlying connections and state.
+#[derive(Debug, Clone)]
 pub struct DynDocumentStore {
-    backend: Box<dyn DynStoreBackend>,
+    backend: Arc<dyn DynStoreBackend>,
 }
 
 impl DynDocumentStore {
     /// Creates a new dynamic document store with the given backend trait object.
-    pub fn new(backend: Box<dyn DynStoreBackend>) -> Self {
+    pub fn new(backend: Arc<dyn DynStoreBackend>) -> Self {
         Self { backend }
     }
 
@@ -311,8 +344,11 @@ impl DynDocumentStore {
     }
 
     /// Shuts down the store and releases backend resources.
-    pub async fn shutdown(self) -> DocumentStoreResult<()> {
-        self.backend.shutdown_boxed().await
+    ///
+    /// May be called from any clone of this store, any number of times;
+    /// see [`DocumentStore::shutdown`] for the full idempotency contract.
+    pub async fn shutdown(&self) -> DocumentStoreResult<()> {
+        self.backend.shutdown().await
     }
 }
 
@@ -443,13 +479,13 @@ pub trait IntoDynDocumentStore {
 
 impl<B: StoreBackend + 'static> AsDynDocumentStore for DocumentStore<B> {
     fn as_dyn<'a>(&'a self) -> DynDocumentStoreRef<'a> {
-        DynDocumentStoreRef::new(&self.backend)
+        DynDocumentStoreRef::new(&*self.backend)
     }
 }
 
 impl<B: StoreBackend + 'static> AsDynDocumentStore for &'_ DocumentStore<B> {
     fn as_dyn<'a>(&'a self) -> DynDocumentStoreRef<'a> {
-        DynDocumentStoreRef::new(&self.backend)
+        DynDocumentStoreRef::new(&*self.backend)
     }
 }
 
@@ -467,61 +503,12 @@ impl<'a> AsDynDocumentStore for DynDocumentStoreRef<'a> {
 
 impl<B: StoreBackend + 'static> IntoDynDocumentStore for DocumentStore<B> {
     fn into_dyn(self) -> DynDocumentStore {
-        DynDocumentStore::new(Box::new(self.backend))
+        DynDocumentStore::new(self.backend)
     }
 }
 
 impl IntoDynDocumentStore for DynDocumentStore {
     fn into_dyn(self) -> DynDocumentStore {
         self
-    }
-}
-
-pub trait AsStaticDocumentStore {
-    fn as_static<'a, B>(&'a self) -> Option<DocumentStore<&'a B>>
-    where
-        B: StoreBackend + 'static;
-}
-
-pub trait IntoStaticDocumentStore {
-    fn into_static<B>(self) -> Option<DocumentStore<B>>
-    where
-        B: StoreBackend + 'static;
-}
-
-impl AsStaticDocumentStore for DynDocumentStore {
-    fn as_static<'a, B>(&'a self) -> Option<DocumentStore<&'a B>>
-    where
-        B: StoreBackend + 'static,
-    {
-        self.backend
-            .as_any()
-            .downcast_ref::<B>()
-            .map(|b| DocumentStore::new(b))
-    }
-}
-
-impl<'a> AsStaticDocumentStore for DynDocumentStoreRef<'a> {
-    fn as_static<'b, B>(&'b self) -> Option<DocumentStore<&'b B>>
-    where
-        B: StoreBackend + 'static,
-    {
-        self.backend
-            .as_any()
-            .downcast_ref::<B>()
-            .map(|b| DocumentStore::new(b))
-    }
-}
-
-impl IntoStaticDocumentStore for DynDocumentStore {
-    fn into_static<B>(self) -> Option<DocumentStore<B>>
-    where
-        B: StoreBackend + 'static,
-    {
-        self.backend
-            .into_any()
-            .downcast::<B>()
-            .ok()
-            .map(|b| DocumentStore::new(*b))
     }
 }

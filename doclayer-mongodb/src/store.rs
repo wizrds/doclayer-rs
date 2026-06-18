@@ -1,3 +1,5 @@
+use std::sync::{Arc, atomic::{AtomicBool, Ordering as AtomicOrdering}};
+
 use async_trait::async_trait;
 use futures::{stream::iter, StreamExt, TryStreamExt};
 use bson::{Document, Bson, Uuid, doc, deserialize_from_bson};
@@ -19,11 +21,20 @@ use crate::{sanitizer::ValueSanitizer, query::MongoQueryTranslator};
 pub struct MongoDbStore {
     client: Client,
     database: String,
+    shut_down: Arc<AtomicBool>,
 }
 
 impl MongoDbStore {
     pub fn new(client: Client, database: String) -> Self {
-        Self { client, database }
+        Self { client, database, shut_down: Arc::new(AtomicBool::new(false)) }
+    }
+
+    fn ensure_not_shut_down(&self) -> DocumentStoreResult<()> {
+        if self.shut_down.load(AtomicOrdering::SeqCst) {
+            return Err(DocumentStoreError::AlreadyShutDown);
+        }
+
+        Ok(())
     }
 
     pub fn builder(dsn: &str, database: &str) -> MongoDbStoreBuilder {
@@ -124,8 +135,12 @@ impl MongoDbStore {
         doc! { "_id": cmp }
     }
 
-    async fn shutdown(self) -> DocumentStoreResult<()> {
-        self.client.shutdown().await;
+    async fn shutdown(&self) -> DocumentStoreResult<()> {
+        if self.shut_down.swap(true, AtomicOrdering::SeqCst) {
+            return Ok(());
+        }
+
+        self.client.clone().shutdown().await;
 
         Ok(())
     }
@@ -134,6 +149,8 @@ impl MongoDbStore {
 #[async_trait]
 impl StoreBackend for MongoDbStore {
     async fn insert_documents(&self, documents: Vec<(Uuid, Bson)>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(collection)
             .insert_many(
                 documents
@@ -148,6 +165,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn update_documents(&self, documents: Vec<(Uuid, Bson)>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         iter(documents)
             .then(async |(id, doc)| self.get_collection(collection)
                 .update_one(
@@ -164,6 +183,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(collection)
             .delete_many(doc! { "_id": { "$in": ids } })
             .await
@@ -173,6 +194,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn get_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<Vec<Bson>> {
+        self.ensure_not_shut_down()?;
+
         Ok(
             self.get_collection(collection)
                 .find(doc! { "_id": { "$in": ids } })
@@ -188,6 +211,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn query_documents(&self, query: Query, collection: &str) -> DocumentStoreResult<Page<Bson>> {
+        self.ensure_not_shut_down()?;
+
         let base_filter = if let Some(expr) = &query.filter {
             MongoQueryTranslator.visit_expr(expr)?
         } else {
@@ -322,6 +347,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn current_revision_id(&self) -> DocumentStoreResult<Option<String>> {
+        self.ensure_not_shut_down()?;
+
         let result = self.get_collection("_revisions")
             .find_one(doc! { "_id": 0 })
             .await
@@ -337,6 +364,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn set_revision_id(&self, revision_id: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection("_revisions")
             .update_one(
                 doc! { "_id": 0 },
@@ -350,6 +379,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn create_collection(&self, name: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.client
             .database(&self.database)
             .create_collection(&ValueSanitizer::sanitize_string(name))
@@ -360,6 +391,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn drop_collection(&self, name: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(name)
             .drop()
             .await
@@ -369,6 +402,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn list_collections(&self) -> DocumentStoreResult<Vec<String>> {
+        self.ensure_not_shut_down()?;
+
         Ok(
             self.client
                 .database(&self.database)
@@ -382,6 +417,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn add_field(&self, collection: &str, field: &str, default: Bson) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(collection)
             .update_many(
                 doc! { field: { "$exists": false } },
@@ -394,6 +431,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn drop_field(&self, collection: &str, field: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(collection)
             .update_many(
                 doc! {},
@@ -406,6 +445,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn rename_field(&self, collection: &str, field: &str, new: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(collection)
             .update_many(
                 doc! { field: { "$exists": true } },
@@ -418,6 +459,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn add_index(&self, collection: &str, field: &str, unique: bool) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(collection)
             .create_index(
                 IndexModel::builder()
@@ -436,6 +479,8 @@ impl StoreBackend for MongoDbStore {
     }
 
     async fn drop_index(&self, collection: &str, field: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.get_collection(collection)
             .drop_index(field)
             .await
@@ -444,8 +489,12 @@ impl StoreBackend for MongoDbStore {
         Ok(())
     }
 
-    async fn shutdown(self) -> DocumentStoreResult<()> {
-        self.shutdown().await
+    async fn shutdown(&self) -> DocumentStoreResult<()> {
+        MongoDbStore::shutdown(self).await
+    }
+
+    fn is_shut_down(&self) -> bool {
+        self.shut_down.load(AtomicOrdering::SeqCst)
     }
 }
 

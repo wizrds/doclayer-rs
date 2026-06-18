@@ -16,7 +16,7 @@
 
 pub use doclayer_core::{
     collection::{Collection, DynCollection},
-    store::{DocumentStore, DynDocumentStore, DynDocumentStoreRef, AsDynDocumentStore, IntoDynDocumentStore, AsStaticDocumentStore, IntoStaticDocumentStore},
+    store::{DocumentStore, DynDocumentStore, DynDocumentStoreRef, AsDynDocumentStore, IntoDynDocumentStore},
     document::{Document, DocumentExt},
     backend::{StoreBackend, DynStoreBackend, StoreBackendBuilder},
     query::{Query, QueryVisitor, Expr, Sort, SortDirection, FieldOp, QueryBuilder, Filter},

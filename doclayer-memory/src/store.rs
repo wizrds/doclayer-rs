@@ -3,7 +3,7 @@
 //! This module provides a simple but powerful in-memory backend that stores
 //! documents as BSON values in HashMaps with async-safe read-write locks.
 
-use std::{collections::HashMap, sync::Arc, cmp::Ordering};
+use std::{collections::HashMap, sync::{Arc, atomic::{AtomicBool, Ordering as AtomicOrdering}}, cmp::Ordering};
 use async_trait::async_trait;
 use mea::rwlock::RwLock;
 use bson::{Uuid, Bson};
@@ -68,6 +68,8 @@ pub struct InMemoryStore {
     store: Arc<RwLock<StoreMap>>,
     /// Optional current revision ID for tracking schema versions
     current_revision: Arc<RwLock<Option<String>>>,
+    /// Whether [`StoreBackend::shutdown`] has already been called.
+    shut_down: Arc<AtomicBool>,
 }
 
 impl InMemoryStore {
@@ -87,6 +89,7 @@ impl InMemoryStore {
         Self {
             store: Arc::new(RwLock::new(StoreMap::new())),
             current_revision: Arc::new(RwLock::new(None)),
+            shut_down: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -105,12 +108,22 @@ impl InMemoryStore {
     pub fn builder() -> InMemoryStoreBuilder {
         InMemoryStoreBuilder::default()
     }
+
+    fn ensure_not_shut_down(&self) -> DocumentStoreResult<()> {
+        if self.shut_down.load(AtomicOrdering::SeqCst) {
+            return Err(DocumentStoreError::AlreadyShutDown);
+        }
+
+        Ok(())
+    }
 }
 
 
 #[async_trait]
 impl StoreBackend for InMemoryStore {
     async fn insert_documents(&self, documents: Vec<(Uuid, Bson)>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut store = self.store.write().await;
         let collection_map = store
             .entry(collection.to_string())
@@ -130,6 +143,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn update_documents(&self, documents: Vec<(Uuid, Bson)>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut store = self.store.write().await;
         let collection_map = match store.get_mut(collection) {
             Some(col) => col,
@@ -150,6 +165,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut store = self.store.write().await;
         let collection_map = match store.get_mut(collection) {
             Some(col) => col,
@@ -168,6 +185,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn get_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<Vec<Bson>> {
+        self.ensure_not_shut_down()?;
+
         let store = self.store.read().await;
         let collection_map = match store.get(collection) {
             Some(col) => col,
@@ -188,6 +207,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn query_documents(&self, query: Query, collection: &str) -> DocumentStoreResult<Page<Bson>> {
+        self.ensure_not_shut_down()?;
+
         let store = self.store.read().await;
         let collection_map = match store.get(collection) {
             Some(col) => col,
@@ -331,6 +352,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn current_revision_id(&self) -> DocumentStoreResult<Option<String>> {
+        self.ensure_not_shut_down()?;
+
         Ok(
             self.current_revision
                 .read()
@@ -340,6 +363,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn set_revision_id(&self, revision_id: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut guard = self.current_revision.write().await;
         *guard = Some(revision_id.to_string());
 
@@ -347,6 +372,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn create_collection(&self, name: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         self.store
             .write()
             .await
@@ -357,6 +384,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn drop_collection(&self, name: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut store = self.store.write().await;
 
         if store.remove(name).is_none() {
@@ -367,6 +396,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn list_collections(&self) -> DocumentStoreResult<Vec<String>> {
+        self.ensure_not_shut_down()?;
+
         Ok(
             self.store
                 .read()
@@ -378,6 +409,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn add_field(&self, collection: &str, field: &str, default: Bson) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut store = self.store.write().await;
 
         let collection_map = match store.get_mut(collection) {
@@ -396,6 +429,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn drop_field(&self, collection: &str, field: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut store = self.store.write().await;
 
         let collection_map = match store.get_mut(collection) {
@@ -414,6 +449,8 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn rename_field(&self, collection: &str, field: &str, new: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         let mut store = self.store.write().await;
 
         let collection_map = match store.get_mut(collection) {
@@ -434,13 +471,27 @@ impl StoreBackend for InMemoryStore {
     }
 
     async fn add_index(&self, _collection: &str, _field: &str, _unique: bool) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         // In-memory store does not support indexing (no-op)
         Ok(())
     }
 
     async fn drop_index(&self, _collection: &str, _field: &str) -> DocumentStoreResult<()> {
+        self.ensure_not_shut_down()?;
+
         // In-memory store does not support indexing (no-op)
         Ok(())
+    }
+
+    async fn shutdown(&self) -> DocumentStoreResult<()> {
+        self.shut_down.store(true, AtomicOrdering::SeqCst);
+
+        Ok(())
+    }
+
+    fn is_shut_down(&self) -> bool {
+        self.shut_down.load(AtomicOrdering::SeqCst)
     }
 }
 

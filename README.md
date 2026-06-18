@@ -517,7 +517,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Users: {:?}", results);
 
-    // Shutdown using the special method for dynamic stores
     store.shutdown().await?;
     Ok(())
 }

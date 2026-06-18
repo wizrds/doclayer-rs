@@ -33,7 +33,7 @@
 
 use async_trait::async_trait;
 use bson::{Bson, Uuid};
-use std::{any::Any, fmt::Debug};
+use std::fmt::Debug;
 
 use crate::{error::DocumentStoreResult, page::Page, query::Query};
 
@@ -324,8 +324,11 @@ pub trait StoreBackend: Send + Sync + Debug {
 
     /// Cleanly shuts down the backend, releasing all resources.
     ///
-    /// This method is called when the backend is being dropped. Implementers should
-    /// use this to close connections, flush caches, and perform other cleanup operations.
+    /// Unlike the other methods on this trait, `shutdown` is idempotent: it may be
+    /// called more than once, from any number of cheap handles sharing this backend,
+    /// and every call after the first must return `Ok(())` without performing any
+    /// real teardown again. Implementers should use this to close connections, flush
+    /// caches, and perform other cleanup operations exactly once.
     ///
     /// The default implementation is a no-op, but backends with persistent storage or
     /// external connections should override this.
@@ -333,11 +336,17 @@ pub trait StoreBackend: Send + Sync + Debug {
     /// # Returns
     ///
     /// Returns `Ok(())` on success, or a [`DocumentStoreError`](crate::error::DocumentStoreError) on failure.
-    async fn shutdown(self) -> DocumentStoreResult<()>
-    where
-        Self: Sized,
-    {
+    async fn shutdown(&self) -> DocumentStoreResult<()> {
         Ok(())
+    }
+
+    /// Returns whether [`StoreBackend::shutdown`] has already completed successfully.
+    ///
+    /// Backends should check this at the start of every other method and return
+    /// [`DocumentStoreError::AlreadyShutDown`](crate::error::DocumentStoreError::AlreadyShutDown)
+    /// instead of performing the operation once it returns `true`.
+    fn is_shut_down(&self) -> bool {
+        false
     }
 }
 
@@ -627,11 +636,8 @@ pub trait DynStoreBackend: Send + Sync + Debug {
         unique: bool,
     ) -> DocumentStoreResult<()>;
     async fn drop_index(&self, collection: &str, field: &str) -> DocumentStoreResult<()>;
-    async fn shutdown_boxed(self: Box<Self>) -> DocumentStoreResult<()>;
-
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+    async fn shutdown(&self) -> DocumentStoreResult<()>;
+    fn is_shut_down(&self) -> bool;
 }
 
 #[async_trait]
@@ -735,20 +741,12 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         self.drop_index(collection, field).await
     }
 
-    async fn shutdown_boxed(self: Box<Self>) -> DocumentStoreResult<()> {
-        self.shutdown().await
+    async fn shutdown(&self) -> DocumentStoreResult<()> {
+        StoreBackend::shutdown(self).await
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
+    fn is_shut_down(&self) -> bool {
+        StoreBackend::is_shut_down(self)
     }
 }
 
