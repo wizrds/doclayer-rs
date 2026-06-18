@@ -1,6 +1,16 @@
 # Changelog
 
 ---
+## [0.2.1](https://github.com/wizrds/doclayer-rs/-/compare/0.2.0...0.2.1) - 2026-06-18
+
+### Bug Fixes
+
+- Remove unnecessary into/as static traits and make store and backend clone - ([6e79222](https://github.com/wizrds/doclayer-rs/-/commit/6e7922268774c94d2edbf0b4be30c49f3f7372b4)) - Timothy Pogue
+
+### Miscellaneous
+
+- Fix typo in README - ([f87e51b](https://github.com/wizrds/doclayer-rs/-/commit/f87e51b80073c6b6da054c0f9c1c40a15149d20a)) - Timothy Pogue
+---
 ## [0.2.0](https://github.com/wizrds/doclayer-rs/-/compare/0.1.1...0.2.0) - 2026-06-18
 
 ### Bug Fixes
