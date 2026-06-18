@@ -1,277 +1,183 @@
-//! Pagination and result types for managing query results.
+//! Pagination types for query execution and result paging.
 //!
-//! This module provides pagination support for large result sets,
-//! including the [`Page`] struct for result pages and [`PaginationParams`]
-//! for specifying pagination parameters.
+//! This module provides the [`Pagination`] type for requesting either an
+//! offset-based or a cursor-based page of results, the [`Cursor`] opaque
+//! token type used to resume cursor-based pagination, and the [`Page`] result
+//! type that carries paginated results back to a consumer.
 
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use bson::{Bson, Uuid, deserialize_from_slice, serialize_to_vec};
 use serde::{Deserialize, Serialize};
-use std::cmp::min;
 
-/// A single page of paginated results.
+use crate::error::{DocumentStoreError, DocumentStoreResult};
+
+/// The direction to walk when paginating by cursor.
 ///
-/// This struct represents a subset of results from a larger dataset,
-/// along with metadata for navigating through the pages.
+/// [`Forward`](CursorDirection::Forward) requests items that come after the
+/// cursor position according to the query's sort order; [`Backward`](CursorDirection::Backward)
+/// requests items that come before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorDirection {
+    Forward,
+    Backward,
+}
+
+/// The exact position a cursor resumes from: the sort key's value and the
+/// document id of the last item seen, used together as a tiebreaker so that
+/// pagination remains deterministic even when many documents share the same
+/// sort value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CursorPosition {
+    pub sort_value: Bson,
+    pub id: Uuid,
+}
+
+/// An opaque, resumable pagination token.
 ///
-/// # Type Parameters
+/// A [`Cursor`] is handed back to a consumer as part of a [`Page`] and is
+/// meant to be passed back unmodified on a later query to continue from
+/// where the previous page left off. Its string form is safe to embed in a
+/// URL query parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cursor(String);
+
+impl Cursor {
+    /// Encodes a [`CursorPosition`] into an opaque [`Cursor`] token.
+    pub fn encode(position: &CursorPosition) -> DocumentStoreResult<Self> {
+        Ok(Cursor(BASE64.encode(serialize_to_vec(position)?)))
+    }
+
+    /// Decodes this [`Cursor`] back into the [`CursorPosition`] it was created from.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cursor string is not valid base64, or if the
+    /// decoded bytes are not a valid encoded [`CursorPosition`]. This can
+    /// happen if a caller passes back a tampered or malformed cursor string.
+    pub fn decode(&self) -> DocumentStoreResult<CursorPosition> {
+        Ok(deserialize_from_slice(
+            &BASE64
+                .decode(&self.0)
+                .map_err(|e| DocumentStoreError::InvalidDocument(e.to_string()))?,
+        )?)
+    }
+
+    /// Returns the opaque string form of this cursor.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Cursor {
+    fn from(value: String) -> Self {
+        Cursor(value)
+    }
+}
+
+/// How a [`crate::query::Query`] should be paginated.
 ///
-/// * `T` - The type of items contained in this page
-///
-/// # Example
-///
-/// ```ignore
-/// use doclayer::page::Page;
-///
-/// let page: Page<String> = Page::builder(vec!["item1".to_string()])
-///     .with_count(100)
-///     .with_next_page(Some(2))
-///     .build();
-///
-/// assert_eq!(page.items.len(), 1);
-/// assert_eq!(page.count, 100);
-/// ```
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+/// `Offset` and `Cursor` are mutually exclusive by construction: a query is
+/// always paginated in exactly one of these modes, so there is no way to
+/// build a query with both an offset and a cursor set at once.
+#[derive(Debug, Clone, Default)]
+pub enum Pagination {
+    /// No pagination; return every matching document.
+    #[default]
+    None,
+    /// Skip `offset` documents, then return up to `limit` documents.
+    Offset { offset: usize, limit: usize },
+    /// Return up to `limit` documents starting after (or before, depending
+    /// on `direction`) the position encoded in `cursor`. A `cursor` of
+    /// `None` starts from the beginning (`Forward`) or end (`Backward`) of
+    /// the result set.
+    Cursor {
+        cursor: Option<Cursor>,
+        limit: usize,
+        direction: CursorDirection,
+    },
+}
+
+impl Pagination {
+    /// Builds an offset-based [`Pagination`] from a 1-indexed page number and
+    /// a page size, as a convenience over computing the offset by hand.
+    pub fn page(page: usize, per_page: usize) -> Self {
+        Pagination::Offset { offset: (page.max(1) - 1) * per_page, limit: per_page }
+    }
+}
+
+/// A page of documents returned from [`crate::collection::Collection::query`]
+/// and its typed/dynamic equivalents.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Page<T> {
-    /// The items contained in this page.
     pub items: Vec<T>,
-    /// Total count of items across all pages.
-    pub count: usize,
-    /// The next page number (if more pages exist).
-    pub next_page: Option<usize>,
-    /// The previous page number (if this is not the first page).
-    pub previous_page: Option<usize>,
+    /// A cursor that resumes after the last item in this page, or `None` if
+    /// there are no further items in the requested direction.
+    pub next_cursor: Option<Cursor>,
+    /// A cursor that resumes before the first item in this page, or `None`
+    /// if this is already the first page.
+    pub previous_cursor: Option<Cursor>,
+    /// The total number of documents matching the query, across all pages.
+    /// Only populated when the query set `include_total_count`, since
+    /// counting can be expensive on some backends.
+    pub total_count: Option<usize>,
 }
 
 impl<T> Page<T> {
-    /// Creates a new builder for constructing a page with custom settings.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let page = Page::builder(vec![1, 2, 3])
-    ///     .with_count(10)
-    ///     .with_next_page(Some(2))
-    ///     .build();
-    /// ```
-    pub fn builder(items: Vec<T>) -> PageBuilder<T> {
-        PageBuilder::new(items)
+    /// Fallibly maps each item in this page, carrying `next_cursor`,
+    /// `previous_cursor`, and `total_count` through unchanged.
+    pub fn try_map<U, E>(self, f: impl FnMut(T) -> Result<U, E>) -> Result<Page<U>, E> {
+        Ok(Page {
+            items: self
+                .items
+                .into_iter()
+                .map(f)
+                .collect::<Result<Vec<U>, E>>()?,
+            next_cursor: self.next_cursor,
+            previous_cursor: self.previous_cursor,
+            total_count: self.total_count,
+        })
     }
 }
 
-impl<T> Default for Page<T> {
-    fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            count: 0,
-            next_page: None,
-            previous_page: None,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_round_trips_sort_value_and_id() {
+        let position = CursorPosition { sort_value: Bson::Int32(42), id: Uuid::new() };
+
+        let decoded = Cursor::encode(&position)
+            .unwrap()
+            .decode()
+            .unwrap();
+
+        assert_eq!(decoded, position);
+    }
+
+    #[test]
+    fn cursor_decode_rejects_malformed_input() {
+        let cursor = Cursor::from("not valid base64!!".to_string());
+
+        assert!(cursor.decode().is_err());
+    }
+
+    #[test]
+    fn pagination_page_computes_offset() {
+        match Pagination::page(3, 20) {
+            Pagination::Offset { offset, limit } => {
+                assert_eq!(offset, 40);
+                assert_eq!(limit, 20);
+            }
+            _ => panic!("expected Pagination::Offset"),
         }
     }
-}
 
-/// Builder for constructing [`Page`] instances with fluent API.
-///
-/// This builder allows incremental construction of a page with
-/// pagination metadata.
-pub struct PageBuilder<T> {
-    items: Vec<T>,
-    count: usize,
-    next_page: Option<usize>,
-    previous_page: Option<usize>,
-}
-
-impl<T> PageBuilder<T> {
-    /// Creates a new builder with the given items.
-    pub fn new(items: Vec<T>) -> Self {
-        Self {
-            items,
-            count: 0,
-            next_page: None,
-            previous_page: None,
+    #[test]
+    fn pagination_page_clamps_page_zero_to_first_page() {
+        match Pagination::page(0, 10) {
+            Pagination::Offset { offset, .. } => assert_eq!(offset, 0),
+            _ => panic!("expected Pagination::Offset"),
         }
-    }
-
-    /// Sets the total count of items across all pages.
-    pub fn with_count(mut self, count: usize) -> Self {
-        self.count = count;
-        self
-    }
-
-    /// Sets the next page number (or `None` if this is the last page).
-    pub fn with_next_page(mut self, next_page: Option<usize>) -> Self {
-        self.next_page = next_page;
-        self
-    }
-
-    /// Sets the previous page number (or `None` if this is the first page).
-    pub fn with_previous_page(mut self, previous_page: Option<usize>) -> Self {
-        self.previous_page = previous_page;
-        self
-    }
-
-    /// Builds and returns the final [`Page`] instance.
-    pub fn build(self) -> Page<T> {
-        Page {
-            items: self.items,
-            count: self.count,
-            next_page: self.next_page,
-            previous_page: self.previous_page,
-        }
-    }
-}
-
-/// Parameters for paginating through large result sets.
-///
-/// This struct specifies which page to retrieve and how many items per page.
-/// Pages are 1-indexed (page 1 is the first page).
-///
-/// # Example
-///
-/// ```ignore
-/// use doclayer::page::PaginationParams;
-///
-/// let params = PaginationParams::new(2, 50);
-/// // Retrieves page 2 with 50 items per page
-/// // Offset is (2-1) * 50 = 50
-/// assert_eq!(params.offset(), 50);
-/// ```
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct PaginationParams {
-    /// The page number (1-indexed).
-    pub page: usize,
-    /// Number of items per page.
-    pub per_page: usize,
-}
-
-impl PaginationParams {
-    /// Creates new pagination parameters.
-    ///
-    /// # Arguments
-    ///
-    /// * `page` - The page number (1-indexed)
-    /// * `per_page` - Number of items per page
-    pub fn new(page: usize, per_page: usize) -> Self {
-        Self { page, per_page }
-    }
-
-    /// Creates a new builder for constructing pagination parameters.
-    pub fn builder() -> PaginationParamsBuilder {
-        PaginationParamsBuilder::new()
-    }
-
-    /// Calculates the offset (number of items to skip) for this page.
-    ///
-    /// This is useful for database queries using LIMIT/OFFSET.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let params = PaginationParams::new(3, 20);
-    /// assert_eq!(params.offset(), 40);  // Skip 40 items for page 3
-    /// ```
-    pub fn offset(&self) -> usize {
-        (self.page - 1) * self.per_page
-    }
-
-    /// Paginates a vec of items according to these parameters.
-    ///
-    /// This helper method extracts the appropriate slice of items for this page
-    /// and returns them wrapped in a [`Page`] with proper navigation metadata.
-    ///
-    /// # Arguments
-    ///
-    /// * `items` - All items to paginate
-    ///
-    /// # Returns
-    ///
-    /// A [`Page`] containing the appropriate slice of items
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let items: Vec<i32> = (1..=100).collect();
-    /// let params = PaginationParams::new(2, 10);
-    /// let page = params.paginate(items);
-    ///
-    /// assert_eq!(page.items, vec![11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
-    /// assert_eq!(page.next_page, Some(3));
-    /// assert_eq!(page.previous_page, Some(1));
-    /// ```
-    pub fn paginate<T>(&self, items: Vec<T>) -> Page<T>
-    where
-        T: Clone,
-    {
-        // Return empty page if items list is empty or offset is beyond the list
-        if items.is_empty() || (self.offset() >= items.len()) {
-            return Page::default();
-        }
-
-        // Calculate the end index, clamping to the vector length
-        let end = min(self.offset() + self.per_page, items.len());
-        let paginated_items = items[self.offset()..end].to_vec();
-
-        // Build the page with proper navigation metadata
-        Page::builder(paginated_items)
-            .with_count(items.len())
-            .with_next_page(if end < items.len() {
-                Some(self.page + 1)
-            } else {
-                None
-            })
-            .with_previous_page(if self.page > 1 {
-                Some(self.page - 1)
-            } else {
-                None
-            })
-            .build()
-    }
-}
-
-impl Default for PaginationParams {
-    fn default() -> Self {
-        Self { page: 1, per_page: 10 }
-    }
-}
-
-/// Builder for constructing [`PaginationParams`] instances.
-///
-/// This builder allows flexible construction of pagination parameters
-/// with optional overrides from defaults.
-pub struct PaginationParamsBuilder {
-    page: Option<usize>,
-    per_page: Option<usize>,
-}
-
-impl PaginationParamsBuilder {
-    /// Creates a new builder with no parameters set.
-    pub fn new() -> Self {
-        Self { page: None, per_page: None }
-    }
-
-    /// Sets the page number (1-indexed).
-    pub fn with_page(mut self, page: usize) -> Self {
-        self.page = Some(page);
-        self
-    }
-
-    /// Sets the number of items per page.
-    pub fn with_per_page(mut self, per_page: usize) -> Self {
-        self.per_page = Some(per_page);
-        self
-    }
-
-    /// Builds and returns the [`PaginationParams`].
-    ///
-    /// Uses defaults for any unset values (page=1, per_page=10).
-    pub fn build(self) -> PaginationParams {
-        PaginationParams {
-            page: self.page.unwrap_or(1),
-            per_page: self.per_page.unwrap_or(10),
-        }
-    }
-}
-
-impl Default for PaginationParamsBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }

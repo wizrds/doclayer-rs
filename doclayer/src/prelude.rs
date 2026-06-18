@@ -22,4 +22,5 @@ pub use doclayer_core::{
     query::{Query, QueryVisitor, Expr, Sort, SortDirection, FieldOp, QueryBuilder, Filter},
     migrate::{Migration, MigrationDirection, MigrationRef, MigrateOp, MigrationRunner, Migrations, Migrator},
     error::{DocumentStoreError, DocumentStoreResult},
+    page::{Page, Pagination, Cursor, CursorPosition, CursorDirection},
 };

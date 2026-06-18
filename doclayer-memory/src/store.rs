@@ -12,6 +12,7 @@ use doclayer_core::{
     query::{Query, SortDirection},
     error::{DocumentStoreError, DocumentStoreResult},
     backend::{StoreBackend, StoreBackendBuilder},
+    page::{Cursor, CursorDirection, CursorPosition, Page, Pagination},
 };
 
 use crate::evaluator::{DocumentEvaluator, Comparable};
@@ -186,68 +187,147 @@ impl StoreBackend for InMemoryStore {
         Ok(documents)
     }
 
-    async fn query_documents(&self, query: Query, collection: &str) -> DocumentStoreResult<Vec<Bson>> {
+    async fn query_documents(&self, query: Query, collection: &str) -> DocumentStoreResult<Page<Bson>> {
         let store = self.store.read().await;
         let collection_map = match store.get(collection) {
             Some(col) => col,
-            None => return Ok(vec![]),
+            None => return Ok(Page {
+                items: vec![],
+                next_cursor: None,
+                previous_cursor: None,
+                total_count: query.include_total_count.then_some(0),
+            }),
         };
 
-        // Apply filter expressions if present
-        let filtered_docs = match &query.filter {
-            Some(filter) => DocumentEvaluator::filter_documents(
-                collection_map.values(),
-                filter,
-            )?,
-            None => collection_map
-                .values()
-                .cloned()
-                .collect::<Vec<_>>(),
-        };
+        // The map key is the document's id; pair it back up with each
+        // document so it can be used as a sort tiebreaker below.
+        let mut documents = collection_map
+            .iter()
+            .map(|(key, doc)| {
+                key.parse::<Uuid>()
+                    .map(|id| (id, doc.clone()))
+                    .map_err(|e| DocumentStoreError::Backend(e.to_string()))
+            })
+            .collect::<DocumentStoreResult<Vec<(_, _)>>>()?;
 
-        // Apply sorting if specified
-        if let Some(sort) = &query.sort {
-            let mut sorted_docs = filtered_docs;
-
-            sorted_docs.sort_by(|a, b| {
-                // Extract the field value and compare using Comparable wrapper
-                let left = a
-                    .as_document()
-                    .unwrap()
-                    .get(&sort.field)
-                    .map(Comparable::from)
-                    .unwrap_or(Comparable::Null);
-                let right = b
-                    .as_document()
-                    .unwrap()
-                    .get(&sort.field)
-                    .map(Comparable::from)
-                    .unwrap_or(Comparable::Null);
-
-                match sort.direction {
-                    SortDirection::Asc => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
-                    SortDirection::Desc => right.partial_cmp(&left).unwrap_or(Ordering::Equal),
-                }
+        if let Some(filter) = &query.filter {
+            documents.retain(|(_, doc)| {
+                DocumentEvaluator::new(doc)
+                    .evaluate(filter)
+                    .unwrap_or(false)
             });
-
-            // Apply offset and limit
-            return Ok(
-                sorted_docs
-                    .into_iter()
-                    .skip(query.offset.unwrap_or(0))
-                    .take(query.limit.unwrap_or(usize::MAX))
-                    .collect()
-            );
         }
 
-        // Apply offset and limit without sorting
-        Ok(
-            filtered_docs
-                .into_iter()
-                .skip(query.offset.unwrap_or(0))
-                .take(query.limit.unwrap_or(usize::MAX))
-                .collect()
-        )
+        let sort_value = |doc: &Bson| -> Bson {
+            match &query.sort {
+                Some(sort) => doc
+                    .as_document()
+                    .and_then(|fields| fields.get(&sort.field))
+                    .cloned()
+                    .unwrap_or(Bson::Null),
+                None => Bson::Null,
+            }
+        };
+
+        let direction = query
+            .sort
+            .as_ref()
+            .map(|sort| sort.direction.clone())
+            .unwrap_or(SortDirection::Asc);
+
+        // Used both to sort the full result set and to locate a cursor's
+        // remembered position within it.
+        let cmp_position = |a_value: &Bson, a_id: &Uuid, b_value: &Bson, b_id: &Uuid| -> Ordering {
+            let primary = match direction {
+                SortDirection::Asc => Comparable::from(a_value)
+                    .partial_cmp(&Comparable::from(b_value))
+                    .unwrap_or(Ordering::Equal),
+                SortDirection::Desc => Comparable::from(b_value)
+                    .partial_cmp(&Comparable::from(a_value))
+                    .unwrap_or(Ordering::Equal),
+            };
+
+            primary.then_with(|| a_id.cmp(b_id))
+        };
+
+        documents.sort_by(|(a_id, a_doc), (b_id, b_doc)| {
+            cmp_position(&sort_value(a_doc), a_id, &sort_value(b_doc), b_id)
+        });
+
+        let total_count = query.include_total_count.then_some(documents.len());
+
+        let (start, end) = match &query.pagination {
+            Pagination::None => (0, documents.len()),
+            Pagination::Offset { offset, limit } => {
+                let start = (*offset).min(documents.len());
+                let end = start.saturating_add(*limit).min(documents.len());
+
+                (start, end)
+            }
+            Pagination::Cursor { cursor, limit, direction: cursor_direction } => {
+                let boundary = cursor
+                    .as_ref()
+                    .map(Cursor::decode)
+                    .transpose()?;
+
+                match cursor_direction {
+                    CursorDirection::Forward => {
+                        let start = match &boundary {
+                            Some(position) => documents
+                                .iter()
+                                .position(|(id, doc)| {
+                                    cmp_position(&sort_value(doc), id, &position.sort_value, &position.id) == Ordering::Greater
+                                })
+                                .unwrap_or(documents.len()),
+                            None => 0,
+                        };
+                        let end = start.saturating_add(*limit).min(documents.len());
+
+                        (start, end)
+                    }
+                    CursorDirection::Backward => {
+                        let end = match &boundary {
+                            Some(position) => documents
+                                .iter()
+                                .rposition(|(id, doc)| {
+                                    cmp_position(&sort_value(doc), id, &position.sort_value, &position.id) == Ordering::Less
+                                })
+                                .map(|idx| idx + 1)
+                                .unwrap_or(0),
+                            None => documents.len(),
+                        };
+                        let start = end.saturating_sub(*limit);
+
+                        (start, end)
+                    }
+                }
+            }
+        };
+
+        let page = &documents[start..end];
+
+        let next_cursor = if end < documents.len() {
+            page.last()
+                .map(|(id, doc)| Cursor::encode(&CursorPosition { sort_value: sort_value(doc), id: *id }))
+                .transpose()?
+        } else {
+            None
+        };
+
+        let previous_cursor = if start > 0 {
+            page.first()
+                .map(|(id, doc)| Cursor::encode(&CursorPosition { sort_value: sort_value(doc), id: *id }))
+                .transpose()?
+        } else {
+            None
+        };
+
+        Ok(Page {
+            items: page.iter().map(|(_, doc)| doc.clone()).collect(),
+            next_cursor,
+            previous_cursor,
+            total_count,
+        })
     }
 
     async fn current_revision_id(&self) -> DocumentStoreResult<Option<String>> {

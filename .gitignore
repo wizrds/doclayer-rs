@@ -39,3 +39,6 @@ repomix.output.md
 
 doclayer-test/
 compose/
+
+# Agent tasks
+.agent/tasks

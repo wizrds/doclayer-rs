@@ -44,6 +44,7 @@ use crate::{
     backend::{DynStoreBackend, StoreBackend},
     document::{Document, DocumentExt},
     error::DocumentStoreResult,
+    page::Page,
     query::Query,
 };
 
@@ -162,16 +163,17 @@ impl<'a, B: StoreBackend> Collection<'a, B> {
     ///
     /// # Arguments
     ///
-    /// * `query` - The [`Query`] specifying filters, sorting, limits, and offsets
+    /// * `query` - The [`Query`] specifying filters, sorting, and pagination
     ///
     /// # Returns
     ///
-    /// A vector of BSON documents matching the query criteria.
+    /// A [`Page`] of BSON documents matching the query criteria, along with
+    /// pagination metadata.
     ///
     /// # Errors
     ///
     /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if the operation fails.
-    pub async fn query(&self, query: Query) -> DocumentStoreResult<Vec<Bson>> {
+    pub async fn query(&self, query: Query) -> DocumentStoreResult<Page<Bson>> {
         Ok(self
             .backend
             .query_documents(query, &self.name())
@@ -293,16 +295,17 @@ impl<'a> DynCollection<'a> {
     ///
     /// # Arguments
     ///
-    /// * `query` - The [`Query`] specifying filters, sorting, limits, and offsets
+    /// * `query` - The [`Query`] specifying filters, sorting, and pagination
     ///
     /// # Returns
     ///
-    /// A vector of BSON documents matching the query criteria.
+    /// A [`Page`] of BSON documents matching the query criteria, along with
+    /// pagination metadata.
     ///
     /// # Errors
     ///
     /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if the operation fails.
-    pub async fn query(&self, query: Query) -> DocumentStoreResult<Vec<Bson>> {
+    pub async fn query(&self, query: Query) -> DocumentStoreResult<Page<Bson>> {
         Ok(self
             .backend
             .query_documents(query, &self.name())
@@ -447,23 +450,21 @@ impl<'a, B: StoreBackend, D: Document> TypedCollection<'a, B, D> {
     ///
     /// # Arguments
     ///
-    /// * `query` - The [`Query`] specifying filters, sorting, limits, and offsets
+    /// * `query` - The [`Query`] specifying filters, sorting, and pagination
     ///
     /// # Returns
     ///
-    /// A vector of documents matching the query criteria.
+    /// A [`Page`] of documents matching the query criteria, along with
+    /// pagination metadata.
     ///
     /// # Errors
     ///
     /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if deserialization or query fails.
-    pub async fn query(&self, query: Query) -> DocumentStoreResult<Vec<D>> {
-        Ok(self
-            .backend
+    pub async fn query(&self, query: Query) -> DocumentStoreResult<Page<D>> {
+        self.backend
             .query_documents(query, &self.name())
             .await?
-            .into_iter()
-            .map(|doc| D::from_bson(doc))
-            .collect::<Result<Vec<D>, _>>()?)
+            .try_map(D::from_bson)
     }
 }
 
@@ -604,22 +605,20 @@ impl<'a, D: Document> DynTypedCollection<'a, D> {
     ///
     /// # Arguments
     ///
-    /// * `query` - The [`Query`] specifying filters, sorting, limits, and offsets
+    /// * `query` - The [`Query`] specifying filters, sorting, and pagination
     ///
     /// # Returns
     ///
-    /// A vector of documents matching the query criteria.
+    /// A [`Page`] of documents matching the query criteria, along with
+    /// pagination metadata.
     ///
     /// # Errors
     ///
     /// Returns a [`DocumentStoreError`](crate::error::DocumentStoreError) if deserialization or query fails.
-    pub async fn query(&self, query: Query) -> DocumentStoreResult<Vec<D>> {
-        Ok(self
-            .backend
+    pub async fn query(&self, query: Query) -> DocumentStoreResult<Page<D>> {
+        self.backend
             .query_documents(query, &self.name())
             .await?
-            .into_iter()
-            .map(|doc| D::from_bson(doc))
-            .collect::<Result<Vec<D>, _>>()?)
+            .try_map(D::from_bson)
     }
 }

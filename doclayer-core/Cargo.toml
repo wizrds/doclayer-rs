@@ -16,3 +16,4 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 mea = { workspace = true }
+base64 = { workspace = true }

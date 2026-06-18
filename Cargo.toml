@@ -26,3 +26,4 @@ thiserror = { version = "2" }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 mea = { version = "0.6" }
+base64 = { version = "0.22" }

@@ -12,8 +12,7 @@
 //!
 //! let query = Query::builder()
 //!     .filter(Filter::eq("name", "Alice"))
-//!     .limit(10)
-//!     .offset(0)
+//!     .offset_page(0, 10)
 //!     .sort("created_at", SortDirection::Desc)
 //!     .build();
 //! ```
@@ -32,7 +31,10 @@
 
 use bson::Bson;
 
-use crate::error::DocumentStoreError;
+use crate::{
+    error::DocumentStoreError,
+    page::{Cursor, CursorDirection, Pagination},
+};
 
 /// Sort direction for query results.
 #[derive(Debug, Clone)]
@@ -175,8 +177,7 @@ impl Expr {
 ///
 /// let query = Query::builder()
 ///     .filter(Filter::eq("status", "active"))
-///     .limit(10)
-///     .offset(0)
+///     .offset_page(0, 10)
 ///     .sort("created_at", SortDirection::Desc)
 ///     .build();
 /// ```
@@ -184,22 +185,25 @@ impl Expr {
 pub struct Query {
     /// Optional filter expression to match documents.
     pub filter: Option<Expr>,
-    /// Maximum number of documents to return.
-    pub limit: Option<usize>,
-    /// Number of documents to skip (for pagination).
-    pub offset: Option<usize>,
+    /// How this query should be paginated. Offset-based and cursor-based
+    /// pagination are mutually exclusive modes of this single field.
+    pub pagination: Pagination,
     /// Sort specification for results.
     pub sort: Option<Sort>,
+    /// Whether to compute the total number of matching documents across all
+    /// pages. Left `false` by default since counting can be expensive on
+    /// some backends.
+    pub include_total_count: bool,
 }
 
 impl Query {
-    /// Creates a new empty query with no filters or limits.
+    /// Creates a new empty query with no filters, pagination, or sort.
     pub fn new() -> Self {
         Query {
             filter: None,
-            limit: None,
-            offset: None,
+            pagination: Pagination::None,
             sort: None,
+            include_total_count: false,
         }
     }
 
@@ -359,23 +363,49 @@ impl QueryBuilder {
         self
     }
 
-    /// Sets the maximum number of documents to return.
+    /// Paginates this query by offset: skips `offset` documents, then
+    /// returns up to `limit` documents.
     ///
-    /// # Arguments
-    ///
-    /// * `limit` - The maximum number of documents to return
-    pub fn limit(mut self, limit: usize) -> Self {
-        self.query.limit = Some(limit);
-        self
-    }
-
-    /// Sets the number of documents to skip (for pagination).
+    /// This is mutually exclusive with [`QueryBuilder::cursor_page`]; calling
+    /// either replaces whatever pagination mode was previously set.
     ///
     /// # Arguments
     ///
     /// * `offset` - The number of documents to skip
-    pub fn offset(mut self, offset: usize) -> Self {
-        self.query.offset = Some(offset);
+    /// * `limit` - The maximum number of documents to return
+    pub fn offset_page(mut self, offset: usize, limit: usize) -> Self {
+        self.query.pagination = Pagination::Offset { offset, limit };
+        self
+    }
+
+    /// Paginates this query by cursor: returns up to `limit` documents
+    /// starting after (or before, depending on `direction`) the position
+    /// encoded in `cursor`. Pass `None` to start from the beginning
+    /// (`CursorDirection::Forward`) or end (`CursorDirection::Backward`) of
+    /// the result set.
+    ///
+    /// This is mutually exclusive with [`QueryBuilder::offset_page`]; calling
+    /// either replaces whatever pagination mode was previously set.
+    ///
+    /// # Arguments
+    ///
+    /// * `cursor` - The cursor to resume from, or `None` to start from an end
+    /// * `limit` - The maximum number of documents to return
+    /// * `direction` - Which direction to walk relative to the cursor
+    pub fn cursor_page(mut self, cursor: Option<Cursor>, limit: usize, direction: CursorDirection) -> Self {
+        self.query.pagination = Pagination::Cursor { cursor, limit, direction };
+        self
+    }
+
+    /// Sets whether to compute the total number of matching documents across
+    /// all pages. Left `false` by default since counting can be expensive on
+    /// some backends.
+    ///
+    /// # Arguments
+    ///
+    /// * `include` - Whether to compute the total count
+    pub fn include_total_count(mut self, include: bool) -> Self {
+        self.query.include_total_count = include;
         self
     }
 

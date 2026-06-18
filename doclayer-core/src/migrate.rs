@@ -67,6 +67,7 @@ use crate::{
     document::Document,
     error::{DocumentStoreError, DocumentStoreResult},
     query::Query,
+    page::Page,
     store::{AsDynDocumentStore, DynDocumentStoreRef},
 };
 
@@ -223,7 +224,7 @@ impl<'a> MigrateOp<'a> {
             .await
     }
 
-    pub async fn query_typed<D: Document>(&self, query: Query) -> DocumentStoreResult<Vec<D>> {
+    pub async fn query_typed<D: Document>(&self, query: Query) -> DocumentStoreResult<Page<D>> {
         self.store
             .typed_collection::<D>()
             .query(query)
@@ -272,7 +273,7 @@ impl<'a> MigrateOp<'a> {
             .await
     }
 
-    pub async fn query(&self, collection: &str, query: Query) -> DocumentStoreResult<Vec<Bson>> {
+    pub async fn query(&self, collection: &str, query: Query) -> DocumentStoreResult<Page<Bson>> {
         self.store
             .collection(collection)
             .query(query)

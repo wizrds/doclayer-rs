@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::{stream::iter, StreamExt, TryStreamExt};
-use bson::{Document, Bson, Uuid, doc};
+use bson::{Document, Bson, Uuid, doc, deserialize_from_bson};
 use mongodb::{
     Client, Collection as MongoCollection, IndexModel,
     options::{ClientOptions, FindOptions, IndexOptions},
@@ -8,7 +8,8 @@ use mongodb::{
 use doclayer_core::{
     backend::{StoreBackend, StoreBackendBuilder},
     error::{DocumentStoreError, DocumentStoreResult},
-    query::{Query, QueryVisitor, SortDirection},
+    page::{Cursor, CursorDirection, CursorPosition, Page, Pagination},
+    query::{Query, QueryVisitor, Sort, SortDirection},
 };
 
 use crate::{sanitizer::ValueSanitizer, query::MongoQueryTranslator};
@@ -57,6 +58,72 @@ impl MongoDbStore {
         )))
     }
 
+    /// Builds a MongoDB sort document for `sort`, always including `_id` as a
+    /// secondary key so documents sharing the same primary value still sort
+    /// deterministically. `reversed` flips both keys, for walking backward.
+    fn sort_doc(&self, sort: &Sort, reversed: bool) -> Document {
+        let primary = match (&sort.direction, reversed) {
+            (SortDirection::Asc, false) => 1,
+            (SortDirection::Asc, true) => -1,
+            (SortDirection::Desc, false) => -1,
+            (SortDirection::Desc, true) => 1,
+        };
+
+        let mut result = Document::new();
+        result.insert(sort.field.clone(), primary);
+        result.insert("_id", if reversed { -1 } else { 1 });
+
+        result
+    }
+
+    /// Builds the filter clause that seeks past `position` along `field`,
+    /// walking `cursor_direction` relative to `sort_direction`'s display
+    /// order, with `_id` as the tiebreak when values are equal.
+    fn seek_filter(
+        &self,
+        field: &str,
+        sort_direction: &SortDirection,
+        cursor_direction: CursorDirection,
+        position: &CursorPosition,
+    ) -> Document {
+        let primary_op = match (sort_direction, cursor_direction) {
+            (SortDirection::Asc, CursorDirection::Forward)
+            | (SortDirection::Desc, CursorDirection::Backward) => "$gt",
+            _ => "$lt",
+        };
+        let tie_op = match cursor_direction {
+            CursorDirection::Forward => "$gt",
+            CursorDirection::Backward => "$lt",
+        };
+
+        let mut primary_cmp = Document::new();
+        primary_cmp.insert(primary_op, position.sort_value.clone());
+
+        let mut tie_cmp = Document::new();
+        tie_cmp.insert(tie_op, position.id);
+
+        let mut primary_clause = Document::new();
+        primary_clause.insert(field.to_string(), primary_cmp);
+
+        let mut tie_clause = Document::new();
+        tie_clause.insert(field.to_string(), position.sort_value.clone());
+        tie_clause.insert("_id", tie_cmp);
+
+        doc! { "$or": [primary_clause, tie_clause] }
+    }
+
+    /// Builds the filter clause that seeks past `position` by `_id` alone,
+    /// for queries with no explicit sort.
+    fn seek_filter_by_id(&self, cursor_direction: CursorDirection, position: &CursorPosition) -> Document {
+        let mut cmp = Document::new();
+        match cursor_direction {
+            CursorDirection::Forward => cmp.insert("$gt", position.id),
+            CursorDirection::Backward => cmp.insert("$lt", position.id),
+        };
+
+        doc! { "_id": cmp }
+    }
+
     async fn shutdown(self) -> DocumentStoreResult<()> {
         self.client.shutdown().await;
 
@@ -72,7 +139,7 @@ impl StoreBackend for MongoDbStore {
                 documents
                     .iter()
                     .map(|(id, doc)| self.prepare_document(id, doc))
-                    .collect::<DocumentStoreResult<Vec<Document>>>()?,
+                    .collect::<DocumentStoreResult<Vec<_>>>()?,
             )
             .await
             .map_err(|e| DocumentStoreError::Backend(e.to_string()))?;
@@ -111,52 +178,147 @@ impl StoreBackend for MongoDbStore {
                 .find(doc! { "_id": { "$in": ids } })
                 .await
                 .map_err(|e| DocumentStoreError::Backend(e.to_string()))?
-                .try_collect::<Vec<Document>>()
+                .try_collect::<Vec<_>>()
                 .await
                 .map_err(|e| DocumentStoreError::Backend(e.to_string()))?
                 .into_iter()
                 .map(|doc| self.restore_document(&doc))
-                .collect::<DocumentStoreResult<Vec<Bson>>>()?
+                .collect::<DocumentStoreResult<Vec<_>>>()?
         )
     }
 
-    async fn query_documents(&self, query: Query, collection: &str) -> DocumentStoreResult<Vec<Bson>> {
+    async fn query_documents(&self, query: Query, collection: &str) -> DocumentStoreResult<Page<Bson>> {
+        let base_filter = if let Some(expr) = &query.filter {
+            MongoQueryTranslator.visit_expr(expr)?
+        } else {
+            doc! {}
+        };
+
+        let total_count = if query.include_total_count {
+            Some(
+                self.get_collection(collection)
+                    .count_documents(base_filter.clone())
+                    .await
+                    .map_err(|e| DocumentStoreError::Backend(e.to_string()))? as usize
+            )
+        } else {
+            None
+        };
+
         let mut options = FindOptions::default();
+        let mut filter = base_filter;
+        let mut reversed = false;
+        let mut has_boundary = false;
 
-        if let Some(limit) = query.limit {
-            options.limit = Some(limit as i64);
-        }
-        if let Some(skip) = query.offset {
-            options.skip = Some(skip as u64);
-        }
-        if let Some(sort) = &query.sort {
-            options.sort = Some(doc! {
-                sort.field.clone(): match sort.direction {
-                    SortDirection::Asc => 1,
-                    SortDirection::Desc => -1,
+        match &query.pagination {
+            Pagination::None => {
+                if let Some(sort) = &query.sort {
+                    options.sort = Some(self.sort_doc(sort, false));
                 }
-            })
+            }
+            Pagination::Offset { offset, limit } => {
+                options.skip = Some(*offset as u64);
+                options.limit = Some(*limit as i64);
+
+                if let Some(sort) = &query.sort {
+                    options.sort = Some(self.sort_doc(sort, false));
+                }
+            }
+            Pagination::Cursor { cursor, limit, direction } => {
+                reversed = matches!(direction, CursorDirection::Backward);
+
+                options.sort = Some(match &query.sort {
+                    Some(sort) => self.sort_doc(sort, reversed),
+                    None => doc! { "_id": if reversed { -1 } else { 1 } },
+                });
+
+                // Over-fetch by one so we can tell whether another page
+                // exists without a second round trip.
+                options.limit = Some(*limit as i64 + 1);
+
+                if let Some(cursor) = cursor {
+                    has_boundary = true;
+
+                    let position = cursor.decode()?;
+                    let seek = match &query.sort {
+                        Some(sort) => self.seek_filter(
+                            &sort.field,
+                            &sort.direction,
+                            *direction,
+                            &position,
+                        ),
+                        None => self.seek_filter_by_id(*direction, &position),
+                    };
+
+                    filter = doc! { "$and": [filter, seek] };
+                }
+            }
         }
 
-        Ok(
-            self.get_collection(collection)
-                .find(
-                    if let Some(expr) = &query.filter {
-                        MongoQueryTranslator.visit_expr(expr)?
-                    } else {
-                        doc! {}
-                    },
+        let mut documents = self.get_collection(collection)
+            .find(filter)
+            .with_options(options)
+            .await
+            .map_err(|e| DocumentStoreError::Backend(e.to_string()))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| DocumentStoreError::Backend(e.to_string()))?;
+
+        let has_more_in_fetch_direction = if let Pagination::Cursor { limit, .. } = &query.pagination {
+            let has_more = documents.len() > *limit;
+
+            documents.truncate(*limit);
+
+            has_more
+        } else {
+            false
+        };
+
+        if reversed {
+            documents.reverse();
+        }
+
+        let (next_cursor, previous_cursor) = match &query.pagination {
+            Pagination::Cursor { direction: CursorDirection::Forward, .. } => (
+                has_more_in_fetch_direction.then(|| documents.last()).flatten(),
+                has_boundary.then(|| documents.first()).flatten(),
+            ),
+            Pagination::Cursor { direction: CursorDirection::Backward, .. } => (
+                has_boundary.then(|| documents.last()).flatten(),
+                has_more_in_fetch_direction.then(|| documents.first()).flatten(),
+            ),
+            _ => (None, None),
+        };
+
+        let sort_field = query.sort.as_ref().map(|sort| sort.field.clone());
+        let to_cursor = |doc: &Document| -> DocumentStoreResult<Cursor> {
+            Cursor::encode(&CursorPosition {
+                sort_value: sort_field
+                    .as_ref()
+                    .and_then(|field| doc.get(field))
+                    .cloned()
+                    .unwrap_or(Bson::Null),
+                id: deserialize_from_bson(
+                    doc.get("_id")
+                        .cloned()
+                        .ok_or_else(|| DocumentStoreError::InvalidDocument("Expected document to have an _id".into()))?,
                 )
-                .with_options(options)
-                .await
-                .map_err(|e| DocumentStoreError::Backend(e.to_string()))?
-                .try_collect::<Vec<Document>>()
-                .await
-                .map_err(|e| DocumentStoreError::Backend(e.to_string()))?
+                .map_err(|e| DocumentStoreError::InvalidDocument(e.to_string()))?,
+            })
+        };
+
+        let next_cursor = next_cursor.map(to_cursor).transpose()?;
+        let previous_cursor = previous_cursor.map(to_cursor).transpose()?;
+
+        Ok(Page {
+            items: documents
                 .into_iter()
                 .map(|doc| self.restore_document(&doc))
-                .collect::<DocumentStoreResult<Vec<Bson>>>()?
-        )
+                .collect::<DocumentStoreResult<Vec<_>>>()?,
+            next_cursor,
+            previous_cursor,
+            total_count,
+        })
     }
 
     async fn current_revision_id(&self) -> DocumentStoreResult<Option<String>> {

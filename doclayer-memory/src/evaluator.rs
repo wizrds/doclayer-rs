@@ -105,23 +105,6 @@ impl<'a> DocumentEvaluator<'a> {
     pub fn evaluate(&mut self, expr: &Expr) -> DocumentStoreResult<bool> {
         self.visit_expr(expr)
     }
-
-    pub fn filter_documents(
-        documents: impl IntoIterator<Item = &'a Bson>,
-        expr: &Expr,
-    ) -> DocumentStoreResult<Vec<Bson>> {
-        Ok(
-            documents
-                .into_iter()
-                .filter(|doc| {
-                    DocumentEvaluator::new(doc)
-                        .evaluate(expr)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        )
-    }
 }
 
 impl<'a> QueryVisitor for DocumentEvaluator<'a> {

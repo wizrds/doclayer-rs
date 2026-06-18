@@ -199,7 +199,7 @@
 
 pub mod prelude;
 
-pub use doclayer_core::{collection, document, store, backend, query, migrate, error};
+pub use doclayer_core::{collection, document, store, backend, query, migrate, error, page};
 
 // Re-export BSON types for convenience
 pub use bson;

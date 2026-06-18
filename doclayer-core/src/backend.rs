@@ -35,7 +35,7 @@ use async_trait::async_trait;
 use bson::{Bson, Uuid};
 use std::{any::Any, fmt::Debug};
 
-use crate::{error::DocumentStoreResult, query::Query};
+use crate::{error::DocumentStoreResult, page::Page, query::Query};
 
 /// Abstract interface for document storage backends.
 ///
@@ -143,12 +143,14 @@ pub trait StoreBackend: Send + Sync + Debug {
     ///
     /// # Arguments
     ///
-    /// * `query` - The [`Query`] object specifying filters, sorts, limits, and offsets
+    /// * `query` - The [`Query`] object specifying filters, sorts, and pagination
     /// * `collection` - The name of the collection to query
     ///
     /// # Returns
     ///
-    /// Returns a vector of matching BSON documents, or a [`DocumentStoreError`](crate::error::DocumentStoreError) on failure.
+    /// Returns a [`Page<Bson>`](Page) containing the matching BSON documents along with
+    /// pagination metadata (`next_cursor`, `previous_cursor`, and, if requested,
+    /// `total_count`), or a [`DocumentStoreError`](crate::error::DocumentStoreError) on failure.
     ///
     /// # See Also
     ///
@@ -158,7 +160,7 @@ pub trait StoreBackend: Send + Sync + Debug {
         &self,
         query: Query,
         collection: &str,
-    ) -> DocumentStoreResult<Vec<Bson>>;
+    ) -> DocumentStoreResult<Page<Bson>>;
 
     /// Retrieves the current revision/version ID of the store.
     ///
@@ -384,7 +386,7 @@ where
         &self,
         query: Query,
         collection: &str,
-    ) -> DocumentStoreResult<Vec<Bson>> {
+    ) -> DocumentStoreResult<Page<Bson>> {
         (*self)
             .query_documents(query, collection)
             .await
@@ -503,7 +505,7 @@ where
         &self,
         query: Query,
         collection: &str,
-    ) -> DocumentStoreResult<Vec<Bson>> {
+    ) -> DocumentStoreResult<Page<Bson>> {
         (**self)
             .query_documents(query, collection)
             .await
@@ -599,7 +601,7 @@ pub trait DynStoreBackend: Send + Sync + Debug {
         &self,
         query: Query,
         collection: &str,
-    ) -> DocumentStoreResult<Vec<Bson>>;
+    ) -> DocumentStoreResult<Page<Bson>>;
     async fn current_revision_id(&self) -> DocumentStoreResult<Option<String>>;
     async fn set_revision_id(&self, revision_id: &str) -> DocumentStoreResult<()>;
     async fn create_collection(&self, name: &str) -> DocumentStoreResult<()>;
@@ -670,7 +672,7 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         &self,
         query: Query,
         collection: &str,
-    ) -> DocumentStoreResult<Vec<Bson>> {
+    ) -> DocumentStoreResult<Page<Bson>> {
         self.query_documents(query, collection)
             .await
     }
