@@ -492,12 +492,13 @@ For scenarios where the backend type is not known at compile time, use `DynDocum
 
 ```rust
 use doclayer::{prelude::*, memory::InMemoryStore};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a dynamically dispatched store
     let store = DynDocumentStore::new(
-        Box::new(InMemoryStore::builder().build().await?)
+        Arc::new(InMemoryStore::builder().build().await?)
     );
 
     let user_collection = store.typed_collection::<User>();
