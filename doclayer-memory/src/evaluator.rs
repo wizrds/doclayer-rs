@@ -92,7 +92,6 @@ impl<'a> PartialOrd for Comparable<'a> {
     }
 }
 
-
 pub(crate) struct DocumentEvaluator<'a> {
     document: &'a Bson,
 }
@@ -104,6 +103,12 @@ impl<'a> DocumentEvaluator<'a> {
 
     pub fn evaluate(&mut self, expr: &Expr) -> DocumentStoreResult<bool> {
         self.visit_expr(expr)
+    }
+
+    fn resolve_field<'b>(doc: &'b Bson, path: &str) -> Option<&'b Bson> {
+        path.split('.').try_fold(doc, |current, segment| {
+            current.as_document()?.get(segment)
+        })
     }
 }
 
@@ -136,21 +141,11 @@ impl<'a> QueryVisitor for DocumentEvaluator<'a> {
     }
 
     fn visit_exists(&mut self, field: &str, should_exist: bool) -> Result<Self::Output, Self::Error> {
-        Ok(
-            self.document
-                .as_document()
-                .expect("expected document")
-                .get(field)
-                .is_some() == should_exist
-        )
+        Ok(Self::resolve_field(self.document, field).is_some() == should_exist)
     }
 
     fn visit_field(&mut self, field: &str, op: &FieldOp, value: &Bson) -> Result<Self::Output, Self::Error> {
-        match self.document
-            .as_document()
-            .expect("expected document")
-            .get(field)
-        {
+        match Self::resolve_field(self.document, field) {
             Some(field_value) => match op {
                 FieldOp::Eq => Ok(Comparable::from(field_value) == Comparable::from(value)),
                 FieldOp::Ne => Ok(Comparable::from(field_value) != Comparable::from(value)),
@@ -255,5 +250,95 @@ impl<'a> QueryVisitor for DocumentEvaluator<'a> {
             },
             None => Ok(false),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bson::{Bson, doc};
+    use doclayer_core::query::{Expr, FieldOp};
+    use super::DocumentEvaluator;
+
+    fn eval(document: bson::Document, expr: Expr) -> bool {
+        DocumentEvaluator::new(&Bson::Document(document))
+            .evaluate(&expr)
+            .unwrap()
+    }
+
+    fn field(field: &str, op: FieldOp, value: impl Into<Bson>) -> Expr {
+        Expr::Field {
+            field: field.to_string(),
+            op,
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn eq_top_level_nested_document_matches_exact_value() {
+        let document = doc! { "address": { "city": "Denver", "zip": "80201" } };
+
+        assert!(eval(
+            document,
+            field("address", FieldOp::Eq, doc! { "city": "Denver", "zip": "80201" }),
+        ));
+    }
+
+    #[test]
+    fn eq_top_level_nested_document_does_not_match_partial_value() {
+        let document = doc! { "address": { "city": "Denver", "zip": "80201" } };
+
+        assert!(!eval(
+            document,
+            field("address", FieldOp::Eq, doc! { "city": "Denver" }),
+        ));
+    }
+
+    #[test]
+    fn eq_dot_notation_resolves_nested_field() {
+        let document = doc! { "address": { "city": "Denver", "zip": "80201" } };
+
+        assert!(eval(document, field("address.city", FieldOp::Eq, "Denver")));
+    }
+
+    #[test]
+    fn eq_dot_notation_returns_false_for_missing_nested_field() {
+        let document = doc! { "address": { "city": "Denver" } };
+
+        assert!(!eval(document, field("address.zip", FieldOp::Eq, "80201")));
+    }
+
+    #[test]
+    fn eq_dot_notation_returns_false_when_intermediate_key_is_missing() {
+        let document = doc! { "name": "Alice" };
+
+        assert!(!eval(document, field("address.city", FieldOp::Eq, "Denver")));
+    }
+
+    #[test]
+    fn gt_dot_notation_compares_nested_numeric_field() {
+        let document = doc! { "stats": { "score": 95_i32 } };
+
+        assert!(eval(document, field("stats.score", FieldOp::Gt, Bson::Int32(90))));
+    }
+
+    #[test]
+    fn contains_dot_notation_checks_nested_array_membership() {
+        let document = doc! { "meta": { "tags": ["rust", "async", "bson"] } };
+
+        assert!(eval(document, field("meta.tags", FieldOp::Contains, "rust")));
+    }
+
+    #[test]
+    fn not_contains_dot_notation_checks_nested_array_absence() {
+        let document = doc! { "meta": { "tags": ["rust", "async", "bson"] } };
+
+        assert!(!eval(document, field("meta.tags", FieldOp::Contains, "python")));
+    }
+
+    #[test]
+    fn eq_deeply_nested_dot_notation_resolves_three_levels() {
+        let document = doc! { "a": { "b": { "c": "found" } } };
+
+        assert!(eval(document, field("a.b.c", FieldOp::Eq, "found")));
     }
 }

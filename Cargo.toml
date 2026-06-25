@@ -20,10 +20,15 @@ members = [
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 bson = { version = "3.1", features = ["uuid-1", "chrono-0_4", "serde"] }
+
 async-trait = { version = "0.1" }
 futures = { version = "0.3" }
+
 thiserror = { version = "2" }
+
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+
 mea = { version = "0.6" }
+
 base64 = { version = "0.22" }
