@@ -1,6 +1,12 @@
 # Changelog
 
 ---
+## [0.2.3](https://github.com/wizrds/doclayer-rs/-/compare/0.2.2...0.2.3) - 2026-06-25
+
+### Bug Fixes
+
+- **(memory)** Ensure nested field references are handled in document evaluator - ([8572d36](https://github.com/wizrds/doclayer-rs/-/commit/8572d362c68fac937e09dc6131823da828f015ed)) - Timothy Pogue
+---
 ## [0.2.2](https://github.com/wizrds/doclayer-rs/-/compare/0.2.1...0.2.2) - 2026-06-18
 
 ### Bug Fixes

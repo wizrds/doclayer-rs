@@ -8,10 +8,10 @@ license.workspace = true
 readme.workspace = true
 
 [dependencies]
-doclayer-macros = { path = "../doclayer-macros", version = "0.2.2" }
-doclayer-core = { path = "../doclayer-core", version = "0.2.2" }
-doclayer-memory = { path = "../doclayer-memory", version = "0.2.2" }
-doclayer-mongodb = { path = "../doclayer-mongodb", version = "0.2.2", optional = true }
+doclayer-macros = { path = "../doclayer-macros", version = "0.2.3" }
+doclayer-core = { path = "../doclayer-core", version = "0.2.3" }
+doclayer-memory = { path = "../doclayer-memory", version = "0.2.3" }
+doclayer-mongodb = { path = "../doclayer-mongodb", version = "0.2.3", optional = true }
 
 async-trait = { workspace = true }
 serde = { workspace = true }
