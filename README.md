@@ -16,14 +16,14 @@ Or add the git repo to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-doclayer = { git = "https://github.com/wizrds/doclayer-rs", tag = "0.1.1" }
+doclayer = { git = "https://github.com/wizrds/doclayer-rs", tag = "0.2.4" }
 ```
 
 To enable the MongoDB backend:
 
 ```toml
 [dependencies]
-doclayer = { git = "https://github.com/wizrds/doclayer-rs", tag = "0.1.1", features = ["mongodb"] }
+doclayer = { git = "https://github.com/wizrds/doclayer-rs", tag = "0.2.4", features = ["mongodb"] }
 ```
 
 ## Usage
