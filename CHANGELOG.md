@@ -1,6 +1,16 @@
 # Changelog
 
 ---
+## [0.2.4](https://github.com/wizrds/doclayer-rs/-/compare/0.2.3...0.2.4) - 2026-06-28
+
+### Bug Fixes
+
+- Add query projection support and count operation - ([9dd99ef](https://github.com/wizrds/doclayer-rs/-/commit/9dd99ef28fbac63ff0a1d4173e6a32fbc9d1324b)) - Timothy Pogue
+
+### Miscellaneous
+
+- Update README - ([dbbdbef](https://github.com/wizrds/doclayer-rs/-/commit/dbbdbefd86d7aacb97f81012b32d11b31b192ef4)) - Timothy Pogue
+---
 ## [0.2.3](https://github.com/wizrds/doclayer-rs/-/compare/0.2.2...0.2.3) - 2026-06-25
 
 ### Bug Fixes
