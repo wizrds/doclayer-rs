@@ -11,7 +11,7 @@ use doclayer_core::{
     backend::{StoreBackend, StoreBackendBuilder},
     error::{DocumentStoreError, DocumentStoreResult},
     page::{Cursor, CursorDirection, CursorPosition, Page, Pagination},
-    query::{Query, QueryVisitor, Sort, SortDirection},
+    query::{Expr, Query, QueryVisitor, Sort, SortDirection},
 };
 
 use crate::{sanitizer::ValueSanitizer, query::MongoQueryTranslator};
@@ -251,6 +251,15 @@ impl StoreBackend for MongoDbStore {
 
         let mut options = FindOptions::default();
         let mut filter = base_filter;
+
+        if let Some(fields) = &query.projection {
+            options.projection = Some(
+                fields
+                    .iter()
+                    .map(|f| (f.clone(), bson::Bson::Int32(1)))
+                    .collect::<bson::Document>(),
+            );
+        }
         let mut reversed = false;
         let mut has_boundary = false;
 
@@ -506,6 +515,23 @@ impl StoreBackend for MongoDbStore {
             .map_err(|e| DocumentStoreError::Backend(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn count_documents(
+        &self,
+        filter: Option<Expr>,
+        collection: &str,
+    ) -> DocumentStoreResult<u64> {
+        self.ensure_not_shut_down()?;
+
+        self.get_collection(collection)
+            .count_documents(match filter {
+                Some(expr) => MongoQueryTranslator.visit_expr(&expr)?,
+                None => doc! {},
+            })
+            .await
+            .map(|n| n as u64)
+            .map_err(|e| DocumentStoreError::Backend(e.to_string()))
     }
 
     async fn shutdown(&self) -> DocumentStoreResult<()> {

@@ -11,6 +11,8 @@ use doclayer_core::{
     error::{DocumentStoreError, DocumentStoreResult},
 };
 
+use crate::path::BsonPath;
+
 
 /// Type-erased, comparable representation of BSON values.
 ///
@@ -104,12 +106,6 @@ impl<'a> DocumentEvaluator<'a> {
     pub fn evaluate(&mut self, expr: &Expr) -> DocumentStoreResult<bool> {
         self.visit_expr(expr)
     }
-
-    fn resolve_field<'b>(doc: &'b Bson, path: &str) -> Option<&'b Bson> {
-        path.split('.').try_fold(doc, |current, segment| {
-            current.as_document()?.get(segment)
-        })
-    }
 }
 
 impl<'a> QueryVisitor for DocumentEvaluator<'a> {
@@ -141,11 +137,11 @@ impl<'a> QueryVisitor for DocumentEvaluator<'a> {
     }
 
     fn visit_exists(&mut self, field: &str, should_exist: bool) -> Result<Self::Output, Self::Error> {
-        Ok(Self::resolve_field(self.document, field).is_some() == should_exist)
+        Ok(BsonPath::new(field).resolve(self.document).is_some() == should_exist)
     }
 
     fn visit_field(&mut self, field: &str, op: &FieldOp, value: &Bson) -> Result<Self::Output, Self::Error> {
-        match Self::resolve_field(self.document, field) {
+        match BsonPath::new(field).resolve(self.document) {
             Some(field_value) => match op {
                 FieldOp::Eq => Ok(Comparable::from(field_value) == Comparable::from(value)),
                 FieldOp::Ne => Ok(Comparable::from(field_value) != Comparable::from(value)),

@@ -51,5 +51,6 @@ extern crate self as doclayer_memory;
 
 pub mod store;
 pub mod evaluator;
+pub(crate) mod path;
 
 pub use store::{InMemoryStore, InMemoryStoreBuilder};

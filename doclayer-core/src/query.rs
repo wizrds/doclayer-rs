@@ -1,7 +1,7 @@
 //! Query construction and filtering API for document stores.
 //!
 //! This module provides type-safe query construction with filtering, sorting, pagination,
-//! and a visitor pattern for query execution across different backends.
+//! projection, and a visitor pattern for query execution across different backends.
 //!
 //! # Query Building
 //!
@@ -15,6 +15,20 @@
 //!     .offset_page(0, 10)
 //!     .sort("created_at", SortDirection::Desc)
 //!     .build();
+//! ```
+//!
+//! # Projection
+//!
+//! To return only specific fields, call `.project` with a list of dot-notation field paths.
+//! When used with `query`, the result is `Page<Bson>` containing only those fields.
+//! When used with `query_as`, the paths are derived automatically from the `P: Projection` type.
+//!
+//! ```ignore
+//! // Runtime projection
+//! let query = Query::builder().project(["name", "email"]).build();
+//!
+//! // Typed projection -- paths come from P::fields()
+//! let query = Query::builder().build(); // query_as fills in the projection
 //! ```
 //!
 //! # Filter Expression API
@@ -56,6 +70,11 @@ use crate::{
     error::DocumentStoreError,
     page::{Cursor, CursorDirection, Pagination},
 };
+
+/// Declares which BSON field paths a type projects from a document.
+pub trait Projection {
+    fn fields() -> Vec<String>;
+}
 
 /// Sort direction for query results.
 #[derive(Debug, Clone)]
@@ -215,6 +234,8 @@ pub struct Query {
     /// pages. Left `false` by default since counting can be expensive on
     /// some backends.
     pub include_total_count: bool,
+    /// Field paths to include in each returned document. `None` returns full documents.
+    pub projection: Option<Vec<String>>,
 }
 
 impl Query {
@@ -225,12 +246,19 @@ impl Query {
             pagination: Pagination::None,
             sort: None,
             include_total_count: false,
+            projection: None,
         }
     }
 
     /// Creates a new query builder for fluent construction.
     pub fn builder() -> QueryBuilder {
         QueryBuilder::new()
+    }
+
+    /// Sets the projection field list for this query.
+    pub fn project(mut self, fields: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.projection = Some(fields.into_iter().map(Into::into).collect());
+        self
     }
 }
 
@@ -580,6 +608,12 @@ impl QueryBuilder {
     /// * `direction` - The sort direction (ascending or descending)
     pub fn sort(mut self, field: impl Into<String>, direction: SortDirection) -> Self {
         self.query.sort = Some(Sort { field: field.into(), direction });
+        self
+    }
+
+    /// Sets the projection field list for this query.
+    pub fn project(mut self, fields: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.query.projection = Some(fields.into_iter().map(Into::into).collect());
         self
     }
 

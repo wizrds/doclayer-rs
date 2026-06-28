@@ -198,7 +198,8 @@
 
 pub mod prelude;
 
-pub use doclayer_core::{collection, document, store, backend, query, migrate, error, page};
+pub use doclayer_core::*;
+pub use doclayer_macros::Projection;
 
 // Re-export BSON types for convenience
 pub use bson;

@@ -9,7 +9,6 @@ Doclayer is a Rust library that provides a simple and efficient way to manage do
 - **Multiple backends** - Support for in-memory and MongoDB storage with an extensible trait system
 - **Flexible querying** - Powerful, composable query API for filtering and sorting consistently across backends
 - **Schema migrations** - Versioned migrations for evolving your data models
-- **Dynamic dispatch** - Runtime selection of backends without compile-time type knowledge
 
 ## Quick Start
 
@@ -160,7 +159,7 @@ The library provides a fluent query builder API with support for filtering, sort
 
 ```rust
 // Query all documents in a collection
-let all_users = user_collection.query(Query::builder().build()).await?;
+let all_users = user_collection.query(Query::default()).await?;
 
 println!("{:?}", all_users.items);
 ```
@@ -430,6 +429,69 @@ let posts = post_collection
     .await?;
 
 println!("{:?}", posts.items);
+```
+
+### Projection
+
+Projection limits which fields are returned per document. There are two ways to use it.
+
+**Typed projection** derives a shape at compile time. Add `#[derive(Projection)]` alongside `#[derive(Deserialize)]` on a struct, then call `query_as` on any collection. Field names are inferred from the struct fields. Annotate a field with `#[project]` to recurse into a nested type that also implements `Projection`, prefixing its paths with the field name:
+
+```rust
+use doclayer::Projection;
+use serde::Deserialize;
+
+#[derive(Deserialize, Projection)]
+pub struct UserAddress {
+    pub state: String,
+    pub zip: String,
+}
+
+#[derive(Deserialize, Projection)]
+pub struct UserSummary {
+    pub name: String,
+    pub email: String,
+    #[project]
+    pub address: UserAddress,
+}
+
+let summaries = user_collection
+    .query_as::<UserSummary>(Query::default())
+    .await?;
+```
+
+For a newtype wrapping an external type, supply the field paths explicitly with `#[projection(fields = [...])]`:
+
+```rust
+#[derive(Deserialize, Projection)]
+#[serde(transparent)]
+#[projection(fields = ["name", "address.city"])]
+pub struct UserView(ExternalUserType);
+```
+
+**Runtime projection** passes field paths directly on the query and returns `Page<Bson>`:
+
+```rust
+let user_collection = store.collection("users");
+let fields = vec!["name", "email"];
+
+let page = user_collection
+    .query(Query::builder().project(fields).build())
+    .await?;
+```
+
+### Counting Documents
+
+`count` returns the number of documents matching an optional filter without fetching the documents themselves:
+
+```rust
+// Count all users
+let total = user_collection.count(None).await?;
+
+// Count users matching a filter
+let active = user_collection
+    .count(Filter::eq("status", "active"))
+    .await?;
 ```
 
 ### Updating Documents

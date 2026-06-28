@@ -19,7 +19,7 @@ pub use doclayer_core::{
     store::{DocumentStore, DynDocumentStore, DynDocumentStoreRef, AsDynDocumentStore, IntoDynDocumentStore},
     document::{Document, DocumentExt},
     backend::{StoreBackend, DynStoreBackend, StoreBackendBuilder},
-    query::{Query, QueryVisitor, Expr, Sort, SortDirection, FieldOp, QueryBuilder, Filter},
+    query::{Query, QueryVisitor, Expr, Sort, SortDirection, FieldOp, QueryBuilder, Filter, Projection},
     migrate::{Migration, MigrationDirection, MigrationRef, MigrateOp, MigrationRunner, Migrations, Migrator},
     error::{DocumentStoreError, DocumentStoreResult},
     page::{Page, Pagination, Cursor, CursorPosition, CursorDirection},

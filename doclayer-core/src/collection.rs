@@ -11,6 +11,18 @@
 //! - [`DynCollection`] - Dynamic dispatch version of untyped collection
 //! - [`DynTypedCollection`] - Dynamic dispatch version of typed collection
 //!
+//! # Projection
+//!
+//! All collection types expose two query methods:
+//!
+//! - `query` - Returns `Page<Bson>`. Combine with `Query::project` to return only specific fields at runtime.
+//! - `query_as<P>` - Returns `Page<P>` where `P: Projection + DeserializeOwned`. Field paths come from `P::fields()` automatically.
+//!
+//! # Counting
+//!
+//! `count(filter)` returns the number of documents matching an optional filter expression
+//! without fetching the documents themselves.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -37,7 +49,8 @@
 //! # Ok(()) }
 //! ```
 
-use bson::{Bson, Uuid};
+use bson::{Bson, Uuid, de::deserialize_from_bson};
+use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 
 use crate::{
@@ -45,7 +58,7 @@ use crate::{
     document::{Document, DocumentExt},
     error::DocumentStoreResult,
     page::Page,
-    query::Query,
+    query::{Expr, Projection, Query},
 };
 
 /// An untyped collection with a reference to a storage backend.
@@ -195,6 +208,24 @@ impl<'a, B: StoreBackend> Collection<'a, B> {
             .query_documents(query, &self.name())
             .await?)
     }
+
+    /// Queries documents, projecting and deserializing each result into `P`.
+    pub async fn query_as<P: Projection + DeserializeOwned>(
+        &self,
+        query: Query,
+    ) -> DocumentStoreResult<Page<P>> {
+        self.backend
+            .query_documents(query.project(P::fields()), &self.name())
+            .await?
+            .try_map(|bson| deserialize_from_bson(bson).map_err(Into::into))
+    }
+
+    /// Returns the count of documents in this collection matching `filter`, or all if `None`.
+    pub async fn count(&self, filter: impl Into<Option<Expr>>) -> DocumentStoreResult<u64> {
+        self.backend
+            .count_documents(filter.into(), &self.name())
+            .await
+    }
 }
 
 /// A dynamic (type-erased) collection with a reference to a backend trait object.
@@ -342,6 +373,24 @@ impl<'a> DynCollection<'a> {
             .backend
             .query_documents(query, &self.name())
             .await?)
+    }
+
+    /// Queries documents, projecting and deserializing each result into `P`.
+    pub async fn query_as<P: Projection + DeserializeOwned>(
+        &self,
+        query: Query,
+    ) -> DocumentStoreResult<Page<P>> {
+        self.backend
+            .query_documents(query.project(P::fields()), &self.name())
+            .await?
+            .try_map(|bson| deserialize_from_bson(bson).map_err(Into::into))
+    }
+
+    /// Returns the count of documents in this collection matching `filter`, or all if `None`.
+    pub async fn count(&self, filter: impl Into<Option<Expr>>) -> DocumentStoreResult<u64> {
+        self.backend
+            .count_documents(filter.into(), &self.name())
+            .await
     }
 }
 
@@ -523,6 +572,24 @@ impl<'a, B: StoreBackend, D: Document> TypedCollection<'a, B, D> {
             .await?
             .try_map(D::from_bson)
     }
+
+    /// Queries documents, projecting and deserializing each result into `P`.
+    pub async fn query_as<P: Projection + DeserializeOwned>(
+        &self,
+        query: Query,
+    ) -> DocumentStoreResult<Page<P>> {
+        self.backend
+            .query_documents(query.project(P::fields()), &self.name())
+            .await?
+            .try_map(|bson| deserialize_from_bson(bson).map_err(Into::into))
+    }
+
+    /// Returns the count of documents in this collection matching `filter`, or all if `None`.
+    pub async fn count(&self, filter: impl Into<Option<Expr>>) -> DocumentStoreResult<u64> {
+        self.backend
+            .count_documents(filter.into(), &self.name())
+            .await
+    }
 }
 
 #[derive(Debug)]
@@ -702,5 +769,23 @@ impl<'a, D: Document> DynTypedCollection<'a, D> {
             .query_documents(query, &self.name())
             .await?
             .try_map(D::from_bson)
+    }
+
+    /// Queries documents, projecting and deserializing each result into `P`.
+    pub async fn query_as<P: Projection + DeserializeOwned>(
+        &self,
+        query: Query,
+    ) -> DocumentStoreResult<Page<P>> {
+        self.backend
+            .query_documents(query.project(P::fields()), &self.name())
+            .await?
+            .try_map(|bson| deserialize_from_bson(bson).map_err(Into::into))
+    }
+
+    /// Returns the count of documents in this collection matching `filter`, or all if `None`.
+    pub async fn count(&self, filter: impl Into<Option<Expr>>) -> DocumentStoreResult<u64> {
+        self.backend
+            .count_documents(filter.into(), &self.name())
+            .await
     }
 }

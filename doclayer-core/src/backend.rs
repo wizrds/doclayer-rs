@@ -35,7 +35,11 @@ use async_trait::async_trait;
 use bson::{Bson, Uuid};
 use std::fmt::Debug;
 
-use crate::{error::DocumentStoreResult, page::Page, query::Query};
+use crate::{
+    error::DocumentStoreResult,
+    page::Page,
+    query::{Expr, Query},
+};
 
 /// Abstract interface for document storage backends.
 ///
@@ -346,6 +350,22 @@ pub trait StoreBackend: Send + Sync + Debug {
     /// Returns `Ok(())` on success, or a [`DocumentStoreError`](crate::error::DocumentStoreError) on failure.
     async fn drop_index(&self, collection: &str, field: &str) -> DocumentStoreResult<()>;
 
+    /// Counts the number of documents in a collection matching an optional filter.
+    /// 
+    /// # Arguments
+    ///
+    /// * `filter` - An optional filter expression to match documents
+    /// * `collection` - The name of the collection
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of documents matching the filter, or all documents if `None`.
+    async fn count_documents(
+        &self,
+        _filter: Option<Expr>,
+        _collection: &str,
+    ) -> DocumentStoreResult<u64>;
+
     /// Cleanly shuts down the backend, releasing all resources.
     ///
     /// Unlike the other methods on this trait, `shutdown` is idempotent: it may be
@@ -501,6 +521,16 @@ where
             .drop_index(collection, field)
             .await
     }
+
+    async fn count_documents(
+        &self,
+        filter: Option<Expr>,
+        collection: &str,
+    ) -> DocumentStoreResult<u64> {
+        (*self)
+            .count_documents(filter, collection)
+            .await
+    }
 }
 
 #[async_trait]
@@ -630,6 +660,16 @@ where
             .drop_index(collection, field)
             .await
     }
+
+    async fn count_documents(
+        &self,
+        filter: Option<Expr>,
+        collection: &str,
+    ) -> DocumentStoreResult<u64> {
+        (**self)
+            .count_documents(filter, collection)
+            .await
+    }
 }
 
 #[async_trait]
@@ -685,6 +725,11 @@ pub trait DynStoreBackend: Send + Sync + Debug {
         unique: bool,
     ) -> DocumentStoreResult<()>;
     async fn drop_index(&self, collection: &str, field: &str) -> DocumentStoreResult<()>;
+    async fn count_documents(
+        &self,
+        filter: Option<Expr>,
+        collection: &str,
+    ) -> DocumentStoreResult<u64>;
     async fn shutdown(&self) -> DocumentStoreResult<()>;
     fn is_shut_down(&self) -> bool;
 }
@@ -696,7 +741,8 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         documents: Vec<(Uuid, Bson)>,
         collection: &str,
     ) -> DocumentStoreResult<()> {
-        self.insert_documents(documents, collection)
+        self
+            .insert_documents(documents, collection)
             .await
     }
 
@@ -705,7 +751,8 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         documents: Vec<(Uuid, Bson)>,
         collection: &str,
     ) -> DocumentStoreResult<()> {
-        self.update_documents(documents, collection)
+        self
+            .update_documents(documents, collection)
             .await
     }
 
@@ -714,12 +761,14 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         documents: Vec<(Uuid, Bson)>,
         collection: &str,
     ) -> DocumentStoreResult<()> {
-        self.upsert_documents(documents, collection)
+        self
+            .upsert_documents(documents, collection)
             .await
     }
 
     async fn delete_documents(&self, ids: Vec<Uuid>, collection: &str) -> DocumentStoreResult<()> {
-        self.delete_documents(ids, collection)
+        self
+            .delete_documents(ids, collection)
             .await
     }
 
@@ -728,7 +777,8 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         ids: Vec<Uuid>,
         collection: &str,
     ) -> DocumentStoreResult<Vec<Bson>> {
-        self.get_documents(ids, collection)
+        self
+            .get_documents(ids, collection)
             .await
     }
 
@@ -737,28 +787,39 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         query: Query,
         collection: &str,
     ) -> DocumentStoreResult<Page<Bson>> {
-        self.query_documents(query, collection)
+        self
+            .query_documents(query, collection)
             .await
     }
 
     async fn current_revision_id(&self) -> DocumentStoreResult<Option<String>> {
-        self.current_revision_id().await
+        self
+            .current_revision_id()
+            .await
     }
 
     async fn set_revision_id(&self, revision_id: &str) -> DocumentStoreResult<()> {
-        self.set_revision_id(revision_id).await
+        self
+            .set_revision_id(revision_id)
+            .await
     }
 
     async fn create_collection(&self, name: &str) -> DocumentStoreResult<()> {
-        self.create_collection(name).await
+        self
+            .create_collection(name)
+            .await
     }
 
     async fn drop_collection(&self, name: &str) -> DocumentStoreResult<()> {
-        self.drop_collection(name).await
+        self
+            .drop_collection(name)
+            .await
     }
 
     async fn list_collections(&self) -> DocumentStoreResult<Vec<String>> {
-        self.list_collections().await
+        self
+            .list_collections()
+            .await
     }
 
     async fn add_field(
@@ -767,12 +828,15 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         field: &str,
         default: Bson,
     ) -> DocumentStoreResult<()> {
-        self.add_field(collection, field, default)
+        self
+            .add_field(collection, field, default)
             .await
     }
 
     async fn drop_field(&self, collection: &str, field: &str) -> DocumentStoreResult<()> {
-        self.drop_field(collection, field).await
+        self
+            .drop_field(collection, field)
+            .await
     }
 
     async fn rename_field(
@@ -781,7 +845,8 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         field: &str,
         new: &str,
     ) -> DocumentStoreResult<()> {
-        self.rename_field(collection, field, new)
+        self
+            .rename_field(collection, field, new)
             .await
     }
 
@@ -791,12 +856,25 @@ impl<B: StoreBackend + Send + Sync + 'static> DynStoreBackend for B {
         field: &str,
         unique: bool,
     ) -> DocumentStoreResult<()> {
-        self.add_index(collection, field, unique)
+        self
+            .add_index(collection, field, unique)
             .await
     }
 
     async fn drop_index(&self, collection: &str, field: &str) -> DocumentStoreResult<()> {
-        self.drop_index(collection, field).await
+        self
+            .drop_index(collection, field)
+            .await
+    }
+
+    async fn count_documents(
+        &self,
+        filter: Option<Expr>,
+        collection: &str,
+    ) -> DocumentStoreResult<u64> {
+        self
+            .count_documents(filter, collection)
+            .await
     }
 
     async fn shutdown(&self) -> DocumentStoreResult<()> {

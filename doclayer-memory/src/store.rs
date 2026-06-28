@@ -9,13 +9,16 @@ use mea::rwlock::RwLock;
 use bson::{Uuid, Bson};
 
 use doclayer_core::{
-    query::{Query, SortDirection},
+    query::{Expr, Query, SortDirection},
     error::{DocumentStoreError, DocumentStoreResult},
     backend::{StoreBackend, StoreBackendBuilder},
     page::{Cursor, CursorDirection, CursorPosition, Page, Pagination},
 };
 
-use crate::evaluator::{DocumentEvaluator, Comparable};
+use crate::{
+    evaluator::{DocumentEvaluator, Comparable},
+    path::BsonPath,
+};
 
 type CollectionMap = HashMap<String, Bson>;
 type StoreMap = HashMap<String, CollectionMap>;
@@ -115,6 +118,38 @@ impl InMemoryStore {
         }
 
         Ok(())
+    }
+
+    fn apply_projection(doc: &Bson, fields: &[String]) -> Bson {
+        let mut result = bson::Document::new();
+
+        for path in fields {
+            if let Some(value) = BsonPath::new(path).resolve(doc) {
+                Self::insert_at_path(&mut result, path, value.clone());
+            }
+        }
+
+        Bson::Document(result)
+    }
+
+    fn insert_at_path(doc: &mut bson::Document, path: &str, value: Bson) {
+        let mut segments = path.splitn(2, '.');
+
+        match (segments.next(), segments.next()) {
+            (Some(key), None) => {
+                doc.insert(key, value);
+            }
+            (Some(key), Some(rest)) => {
+                let nested = doc
+                    .entry(key.to_string())
+                    .or_insert_with(|| Bson::Document(bson::Document::new()));
+
+                if let Bson::Document(nested_doc) = nested {
+                    Self::insert_at_path(nested_doc, rest, value);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -359,11 +394,43 @@ impl StoreBackend for InMemoryStore {
         };
 
         Ok(Page {
-            items: page.iter().map(|(_, doc)| doc.clone()).collect(),
+            items: page
+                .iter()
+                .map(|(_, doc)| match &query.projection {
+                    Some(fields) => Self::apply_projection(doc, fields),
+                    None => doc.clone(),
+                })
+                .collect(),
             next_cursor,
             previous_cursor,
             total_count,
         })
+    }
+
+    async fn count_documents(
+        &self,
+        filter: Option<Expr>,
+        collection: &str,
+    ) -> DocumentStoreResult<u64> {
+        self.ensure_not_shut_down()?;
+
+        let store = self.store.read().await;
+        let collection_map = match store.get(collection) {
+            Some(col) => col,
+            None => return Ok(0),
+        };
+
+        let count = collection_map
+            .values()
+            .filter(|doc| match &filter {
+                Some(expr) => DocumentEvaluator::new(doc)
+                    .evaluate(expr)
+                    .unwrap_or(false),
+                None => true,
+            })
+            .count();
+
+        Ok(count as u64)
     }
 
     async fn current_revision_id(&self) -> DocumentStoreResult<Option<String>> {
@@ -539,5 +606,131 @@ impl StoreBackendBuilder for InMemoryStoreBuilder {
     /// This always succeeds and returns a freshly initialized store.
     async fn build(self) -> DocumentStoreResult<Self::Backend> {
         Ok(InMemoryStore::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bson::{Bson, Uuid, doc};
+
+    use doclayer_core::{
+        backend::StoreBackend,
+        query::{Expr, FieldOp, Query},
+    };
+
+    use super::InMemoryStore;
+
+    async fn store_with_docs() -> InMemoryStore {
+        let store = InMemoryStore::new();
+
+        store
+            .insert_documents(
+                vec![
+                    (Uuid::new(), Bson::Document(doc! { "name": "Alice", "age": 30, "address": { "city": "Denver", "zip": "80201" } })),
+                    (Uuid::new(), Bson::Document(doc! { "name": "Bob", "age": 25, "address": { "city": "Austin", "zip": "73301" } })),
+                    (Uuid::new(), Bson::Document(doc! { "name": "Carol", "age": 35, "address": { "city": "Denver", "zip": "80202" } })),
+                ],
+                "users",
+            )
+            .await
+            .unwrap();
+
+        store
+    }
+
+    #[tokio::test]
+    async fn count_all_documents_returns_total() {
+        let store = store_with_docs().await;
+        assert_eq!(store.count_documents(None, "users").await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn count_with_filter_returns_matching_count() {
+        let store = store_with_docs().await;
+
+        let count = store
+            .count_documents(
+                Some(Expr::Field {
+                    field: "address.city".to_string(),
+                    op: FieldOp::Eq,
+                    value: "Denver".into(),
+                }),
+                "users",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn count_missing_collection_returns_zero() {
+        let store = InMemoryStore::new();
+        assert_eq!(store.count_documents(None, "users").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn projection_returns_only_requested_fields() {
+        let store = store_with_docs().await;
+
+        let page = store
+            .query_documents(Query::new().project(["name"]), "users")
+            .await
+            .unwrap();
+
+        for item in &page.items {
+            let doc = item.as_document().unwrap();
+            assert!(doc.contains_key("name"), "should have 'name'");
+            assert!(!doc.contains_key("age"), "should not have 'age'");
+            assert!(!doc.contains_key("address"), "should not have 'address'");
+        }
+    }
+
+    #[tokio::test]
+    async fn projection_on_nested_field_returns_reconstructed_document() {
+        let store = store_with_docs().await;
+
+        let page = store
+            .query_documents(Query::new().project(["address.city"]), "users")
+            .await
+            .unwrap();
+
+        for item in &page.items {
+            let doc = item.as_document().unwrap();
+            let address = doc.get_document("address").unwrap();
+            assert!(address.contains_key("city"), "should have 'address.city'");
+            assert!(!address.contains_key("zip"), "should not have 'address.zip'");
+        }
+    }
+
+    #[tokio::test]
+    async fn projection_missing_field_omits_it_silently() {
+        let store = store_with_docs().await;
+
+        let page = store
+            .query_documents(Query::new().project(["nonexistent"]), "users")
+            .await
+            .unwrap();
+
+        for item in &page.items {
+            assert!(item.as_document().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn no_projection_returns_full_documents() {
+        let store = store_with_docs().await;
+
+        let page = store
+            .query_documents(Query::new(), "users")
+            .await
+            .unwrap();
+
+        for item in &page.items {
+            let doc = item.as_document().unwrap();
+            assert!(doc.contains_key("name"));
+            assert!(doc.contains_key("age"));
+            assert!(doc.contains_key("address"));
+        }
     }
 }
